@@ -21,8 +21,10 @@ If `.env` includes `APPLICANT_ENABLED_SEARCH_SITES`, only run the queries whose 
 For each Google query:
 - force the `Past 24 hours` filter
 - force Google's date-sorted / most-recent view when it is available
-- if Google does not expose a usable date-sorted control for that query, keep the 24-hour filter and rely on page-level date extraction plus local SQLite sorting
+- if Google does not expose a usable date-sorted control for that query, keep the 24-hour filter and rely on page-level date extraction while processing results in the order they are surfaced
 - continue paginating through all reachable result pages for the enabled source until there are no new relevant candidates left to ingest
+- open each result immediately instead of collecting the whole query into a batch first
+- if a result is a listing page, extract child job links from that page and process those child links in page order before returning to Google
 
 ## Preferred Result Types
 
@@ -43,21 +45,29 @@ If freshness is ambiguous or unavailable:
 - try to infer it from the page
 - if freshness still cannot be verified, keep the job eligible for application and record that the freshness was unverified
 
-## Sort Rule
+## Processing Order Rule
 
-After filtering, sort by:
-1. posted timestamp descending
-2. discovery timestamp descending
+For new discovery:
+1. process Google results in the order shown for the current query
+2. process listing-page child jobs in the order shown on that page
+3. ingest, decide, and apply immediately before moving to the next candidate
 
-This local sort is still required even if Google already appears date-sorted.
+Only backlog jobs recovered with `next-job` should use the local SQLite ordering by `posted_at DESC, discovered_at DESC`.
 
 ## Duplicate Rule
 
-A job is a duplicate if the same canonical URL or the same `job_key` already exists in the database with:
-- `applied`
-- `submitted`
-- `in_progress`
-- `duplicate_skipped`
+A job is a duplicate if the same canonical URL or the same `job_key` already exists in the database with a terminal outcome:
+- application status `submitted`
+- application status `incomplete`
+- application status `blocked`
+- application status `duplicate_skipped`
+- job status `applied`
+- job status `incomplete`
+- job status `blocked`
+- job status `duplicate_skipped`
+- job status `applying`
+
+`failed` is intentionally not terminal. It may be retried only if the same job is rediscovered in a later run.
 
 ## Canonicalization Suggestions
 

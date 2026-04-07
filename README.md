@@ -6,18 +6,19 @@ This project is a Codex + Playwright MCP workflow for finding recent jobs and ap
 
 Automate this loop:
 
-1. Open browser and run Google searches for:
+1. Start a run in SQLite and optionally drain any leftover `ready_to_apply` backlog from an interrupted session
+2. Open browser and run Google searches for:
    - `jobright.ai`
    - `site:boards.greenhouse.io ("software engineer" AND "united states")`
    - `site:jobs.ashbyhq.com`
    - force `Past 24 hours`
    - force Google's date-sorted / newest-first view when available
    - paginate exhaustively through reachable result pages and relevant listing pages
-2. Filter jobs posted in the last 24 hours when freshness can be verified
-3. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
-4. Sort by most recent
-5. Keep a SQLite database of jobs already applied to
-6. Apply one by one until no jobs remain
+3. Open discovered job links immediately, or expand listing pages into child job links and process those one by one before returning to search
+4. Filter jobs posted in the last 24 hours when freshness can be verified
+5. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
+6. Keep a SQLite database of jobs, application outcomes, and structured workflow findings
+7. Apply one by one in discovery order until no jobs remain
 
 ## Components
 
@@ -41,11 +42,14 @@ Automate this loop:
 
 - Never apply twice to the same job
 - Record every attempt
+- Record structured findings for blocked, incomplete, and failed attempts
 - Skip jobs older than 24 hours
 - Do not skip a job solely because freshness could not be verified
-- Sort newest first
+- Process newly discovered jobs immediately instead of batching all sources first
 - Continue until queue is empty
-- Never invent answers on application forms
+- Keep hard facts consistent with the applicant files
+- Use reasonable profile-based assumptions for missing supporting application answers instead of skipping a job solely for that reason
+- Only `failed` outcomes are retryable, and only when the job is rediscovered in a future run
 
 ## Applicant Inputs
 
@@ -83,10 +87,12 @@ python -m job_apply_bot start-run
 python -m job_apply_bot ingest-job --run-id 1 --raw-url "https://boards.greenhouse.io/acme/jobs/12345" --title "Software Engineer" --location "Remote, United States" --posted-at "New" --allow-unverifiable-freshness
 python -m job_apply_bot next-job --mark-applying
 python -m job_apply_bot record-application --job-key "<job_key>" --status submitted --run-id 1
+python -m job_apply_bot record-finding --job-key "<job_key>" --run-id 1 --application-status failed --stage submit --category confirmation_missing --summary "No confirmation page appeared"
 python -m job_apply_bot finish-run --run-id 1
 ```
 
 By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
+`next-job` remains available for draining leftover backlog from interrupted runs; new discovery should otherwise ingest and apply each candidate immediately.
 
 ## Future Codex Run
 

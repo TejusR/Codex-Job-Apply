@@ -4,7 +4,14 @@ import argparse
 import json
 from pathlib import Path
 
-from .db import finish_run, ingest_job, next_job, record_application, start_run
+from .db import (
+    finish_run,
+    ingest_job,
+    next_job,
+    record_application,
+    record_finding,
+    start_run,
+)
 from .profile import parse_csv, validate_profile
 
 DEFAULT_DB_PATH = Path("data/job_apply_bot.sqlite3")
@@ -71,12 +78,28 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument(
         "--status",
         required=True,
-        choices=["submitted", "failed", "incomplete", "duplicate_skipped"],
+        choices=["submitted", "failed", "incomplete", "duplicate_skipped", "blocked"],
     )
     record_parser.add_argument("--confirmation-text")
     record_parser.add_argument("--confirmation-url")
     record_parser.add_argument("--error-message")
     record_parser.add_argument("--run-id", type=int)
+
+    finding_parser = subparsers.add_parser(
+        "record-finding", help="Persist a structured workflow finding."
+    )
+    finding_parser.add_argument("--job-key", required=True)
+    finding_parser.add_argument("--run-id", type=int, required=True)
+    finding_parser.add_argument(
+        "--application-status",
+        required=True,
+        choices=["failed", "incomplete", "blocked"],
+    )
+    finding_parser.add_argument("--stage", required=True)
+    finding_parser.add_argument("--category", required=True)
+    finding_parser.add_argument("--summary", required=True)
+    finding_parser.add_argument("--detail")
+    finding_parser.add_argument("--page-url")
 
     return parser
 
@@ -131,6 +154,21 @@ def main(argv: list[str] | None = None) -> int:
             confirmation_url=args.confirmation_url,
             error_message=args.error_message,
             run_id=args.run_id,
+        )
+        _print_json(result)
+        return 0
+
+    if args.command == "record-finding":
+        result = record_finding(
+            args.db_path.resolve(),
+            job_key=args.job_key,
+            run_id=args.run_id,
+            application_status=args.application_status,
+            stage=args.stage,
+            category=args.category,
+            summary=args.summary,
+            detail=args.detail,
+            page_url=args.page_url,
         )
         _print_json(result)
         return 0

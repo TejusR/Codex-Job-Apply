@@ -18,8 +18,14 @@ from .jobs import (
     utc_now,
 )
 
-ATTEMPTED_APPLICATION_STATUSES = ("submitted", "failed", "incomplete", "duplicate_skipped")
-TERMINAL_JOB_STATUSES = ("applied", "duplicate_skipped", "applying")
+TERMINAL_APPLICATION_STATUSES = (
+    "submitted",
+    "incomplete",
+    "duplicate_skipped",
+    "blocked",
+)
+FINDING_APPLICATION_STATUSES = ("failed", "incomplete", "blocked")
+TERMINAL_JOB_STATUSES = ("applied", "duplicate_skipped", "blocked", "incomplete", "applying")
 
 SCHEMA_STATEMENTS = (
     """
@@ -65,9 +71,27 @@ SCHEMA_STATEMENTS = (
       notes TEXT
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS application_findings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_key TEXT NOT NULL,
+      run_id INTEGER NOT NULL,
+      application_status TEXT NOT NULL,
+      stage TEXT NOT NULL,
+      category TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      detail TEXT,
+      page_url TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (job_key) REFERENCES jobs(job_key),
+      FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+    """,
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
     "CREATE INDEX IF NOT EXISTS idx_jobs_posted_at ON jobs(posted_at);",
     "CREATE INDEX IF NOT EXISTS idx_applications_job_key ON applications(job_key);",
+    "CREATE INDEX IF NOT EXISTS idx_application_findings_run_id ON application_findings(run_id);",
+    "CREATE INDEX IF NOT EXISTS idx_application_findings_job_key ON application_findings(job_key);",
 )
 
 
@@ -151,10 +175,12 @@ def finish_run(db_path: Path, run_id: int) -> dict[str, object]:
             (finished_at, run_id),
         )
         row = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        findings_summary = _build_findings_summary(connection, run_id)
     if row is None:
         raise ValueError(f"Run {run_id} does not exist.")
     summary = dict(row)
     summary["notes"] = _load_notes(summary.get("notes"))
+    summary["findings_summary"] = findings_summary
     return summary
 
 
@@ -183,7 +209,11 @@ def ingest_job(
     with managed_connection(db_path) as connection:
         _increment_run_counter(connection, run_id, "jobs_found")
         run_notes = _get_run_notes(connection, run_id)
-        if job_key in run_notes["seen_job_keys"]:
+        seen_job_keys = run_notes.get("seen_job_keys")
+        if not isinstance(seen_job_keys, list):
+            seen_job_keys = []
+            run_notes["seen_job_keys"] = seen_job_keys
+        if job_key in seen_job_keys:
             _increment_run_counter(connection, run_id, "jobs_skipped_duplicate")
             return IngestResult(
                 action="duplicate_same_run",
@@ -194,7 +224,7 @@ def ingest_job(
                 source=source_name,
                 freshness=freshness,
             )
-        run_notes["seen_job_keys"].append(job_key)
+        seen_job_keys.append(job_key)
         _set_run_notes(connection, run_id, run_notes)
 
         duplicate_reason = _find_attempted_duplicate(connection, job_key, canonical)
@@ -387,7 +417,13 @@ def record_application(
     error_message: str | None,
     run_id: int | None,
 ) -> dict[str, object]:
-    if status not in {"submitted", "failed", "incomplete", "duplicate_skipped"}:
+    if status not in {
+        "submitted",
+        "failed",
+        "incomplete",
+        "duplicate_skipped",
+        "blocked",
+    }:
         raise ValueError(f"Unsupported application status: {status}")
 
     with managed_connection(db_path) as connection:
@@ -427,7 +463,7 @@ def record_application(
         if run_id is not None:
             if status == "submitted":
                 _increment_run_counter(connection, run_id, "jobs_applied")
-            elif status in {"failed", "incomplete"}:
+            elif status in {"failed", "incomplete", "blocked"}:
                 _increment_run_counter(connection, run_id, "jobs_failed")
             elif status == "duplicate_skipped":
                 _increment_run_counter(connection, run_id, "jobs_skipped_duplicate")
@@ -442,13 +478,112 @@ def record_application(
     return dict(application) if application is not None else {"job_key": job_key}
 
 
+def record_finding(
+    db_path: Path,
+    *,
+    job_key: str,
+    run_id: int,
+    application_status: str,
+    stage: str,
+    category: str,
+    summary: str,
+    detail: str | None,
+    page_url: str | None,
+) -> dict[str, object]:
+    if application_status not in FINDING_APPLICATION_STATUSES:
+        raise ValueError(f"Unsupported finding application status: {application_status}")
+
+    created_at = format_timestamp(utc_now())
+    with managed_connection(db_path) as connection:
+        job = connection.execute(
+            "SELECT job_key FROM jobs WHERE job_key = ?", (job_key,)
+        ).fetchone()
+        if job is None:
+            raise ValueError(f"Job {job_key} does not exist.")
+
+        run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Run {run_id} does not exist.")
+
+        connection.execute(
+            """
+            INSERT INTO application_findings (
+                job_key, run_id, application_status, stage, category, summary,
+                detail, page_url, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_key,
+                run_id,
+                application_status,
+                stage,
+                category,
+                summary,
+                detail,
+                page_url,
+                created_at,
+            ),
+        )
+        finding = connection.execute(
+            """
+            SELECT *
+            FROM application_findings
+            WHERE rowid = last_insert_rowid()
+            """
+        ).fetchone()
+    return dict(finding) if finding is not None else {"job_key": job_key, "run_id": run_id}
+
+
+def _build_findings_summary(connection: sqlite3.Connection, run_id: int) -> dict[str, object]:
+    category_rows = connection.execute(
+        """
+        SELECT category, COUNT(*) AS count
+        FROM application_findings
+        WHERE run_id = ?
+        GROUP BY category
+        ORDER BY count DESC, category ASC
+        """,
+        (run_id,),
+    ).fetchall()
+    total_findings = sum(int(row["count"]) for row in category_rows)
+
+    latest_rows = connection.execute(
+        """
+        SELECT job_key, application_status, stage, category, summary, detail, page_url, created_at
+        FROM application_findings
+        WHERE run_id = ?
+          AND application_status IN ('blocked', 'incomplete', 'failed')
+        ORDER BY created_at DESC, id DESC
+        """,
+        (run_id,),
+    ).fetchall()
+
+    latest_for_unsuccessful_jobs: list[dict[str, object]] = []
+    seen_job_keys: set[str] = set()
+    for row in latest_rows:
+        job_key = str(row["job_key"])
+        if job_key in seen_job_keys:
+            continue
+        seen_job_keys.add(job_key)
+        latest_for_unsuccessful_jobs.append(dict(row))
+
+    return {
+        "total_findings": total_findings,
+        "by_category": [dict(row) for row in category_rows],
+        "latest_for_unsuccessful_jobs": latest_for_unsuccessful_jobs,
+    }
+
+
 def _map_application_status(status: str, error_message: str | None) -> tuple[str, str | None]:
     if status == "submitted":
         return "applied", None
     if status == "duplicate_skipped":
         return "duplicate_skipped", error_message or "duplicate_skip_recorded"
+    if status == "blocked":
+        return "blocked", error_message or "application_flow_blocked"
     if status == "incomplete":
-        return "failed", error_message or "missing_required_application_data"
+        return "incomplete", error_message or "missing_required_application_data"
     return "failed", error_message or "application_submission_failed"
 
 
@@ -466,7 +601,10 @@ def _find_attempted_duplicate(
         """,
         (job_key, canonical_url),
     ).fetchone()
-    if application_row is not None and application_row["status"] in ATTEMPTED_APPLICATION_STATUSES:
+    if (
+        application_row is not None
+        and application_row["status"] in TERMINAL_APPLICATION_STATUSES
+    ):
         return f"existing_application_{application_row['status']}"
 
     job_row = connection.execute(
@@ -544,7 +682,7 @@ def _increment_run_counter(
     )
 
 
-def _get_run_notes(connection: sqlite3.Connection, run_id: int) -> dict[str, list[str]]:
+def _get_run_notes(connection: sqlite3.Connection, run_id: int) -> dict[str, object]:
     row = connection.execute("SELECT notes FROM runs WHERE id = ?", (run_id,)).fetchone()
     if row is None:
         raise ValueError(f"Run {run_id} does not exist.")
@@ -552,7 +690,7 @@ def _get_run_notes(connection: sqlite3.Connection, run_id: int) -> dict[str, lis
 
 
 def _set_run_notes(
-    connection: sqlite3.Connection, run_id: int, notes: dict[str, list[str]]
+    connection: sqlite3.Connection, run_id: int, notes: dict[str, object]
 ) -> None:
     connection.execute(
         "UPDATE runs SET notes = ? WHERE id = ?",
@@ -560,12 +698,15 @@ def _set_run_notes(
     )
 
 
-def _load_notes(raw_notes: str | None) -> dict[str, list[str]]:
+def _load_notes(raw_notes: str | None) -> dict[str, object]:
     if not raw_notes:
         return {"seen_job_keys": []}
     try:
         notes = json.loads(raw_notes)
     except json.JSONDecodeError:
         return {"seen_job_keys": []}
-    notes.setdefault("seen_job_keys", [])
+    if not isinstance(notes, dict):
+        return {"seen_job_keys": []}
+    if not isinstance(notes.get("seen_job_keys"), list):
+        notes["seen_job_keys"] = []
     return notes
