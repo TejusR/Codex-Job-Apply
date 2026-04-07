@@ -13,6 +13,7 @@ If `.env` includes `APPLICANT_ENABLED_SEARCH_SITES`, only run the enabled source
 For each query:
 - force Google's `Past 24 hours` filter
 - force Google's date-sorted / newest-first view when available
+- continue across all reachable Google result pages and relevant listing pages until there are no new candidate links left for that source
 
 Collect candidate job posting links from search results.
 
@@ -30,11 +31,11 @@ For each result, extract when available:
 
 ## Step 3: Filter
 
-Keep only jobs posted in the last 24 hours.
+Keep jobs posted in the last 24 hours when freshness can be verified.
 
 If posted date is ambiguous or unavailable:
 - try to infer it from the page
-- if freshness still cannot be verified, skip the job
+- if freshness still cannot be verified, keep the job in the apply queue and record that freshness was unverified
 
 ## Step 4: Normalize
 

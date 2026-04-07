@@ -21,17 +21,20 @@ Ask Codex to:
 3. run `python -m job_apply_bot validate-profile`
 4. create a run with `python -m job_apply_bot start-run`
 5. use Playwright MCP for search, extraction, and application steps
-6. use `python -m job_apply_bot ingest-job` for filtering and dedupe
-7. use `python -m job_apply_bot next-job --mark-applying` to pull the next job
-8. use `python -m job_apply_bot record-application` after each attempt
-9. use `python -m job_apply_bot finish-run` for the final summary
+6. search exhaustively across reachable result pages for each enabled source instead of stopping after a sample page
+7. use `python -m job_apply_bot ingest-job --allow-unverifiable-freshness` for filtering and dedupe
+8. use `python -m job_apply_bot next-job --mark-applying` to pull the next job
+9. use `python -m job_apply_bot record-application` after each attempt
+10. use `python -m job_apply_bot finish-run` for the final summary
 
 ## Strong Guidance
 
 Tell Codex to:
 - treat markdown files as source-of-truth requirements
 - force Google `Past 24 hours` and date-sorted / newest-first results during search
+- keep searching until no new relevant candidates remain for each enabled source
 - honor `APPLICANT_ENABLED_SEARCH_SITES` from `.env` when deciding which search sources to run
+- do not drop a job solely because freshness cannot be verified
 - keep changes minimal and organized
 - log every application attempt
 - never submit duplicate applications

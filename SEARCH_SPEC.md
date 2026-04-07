@@ -22,6 +22,7 @@ For each Google query:
 - force the `Past 24 hours` filter
 - force Google's date-sorted / most-recent view when it is available
 - if Google does not expose a usable date-sorted control for that query, keep the 24-hour filter and rely on page-level date extraction plus local SQLite sorting
+- continue paginating through all reachable result pages for the enabled source until there are no new relevant candidates left to ingest
 
 ## Preferred Result Types
 
@@ -36,7 +37,11 @@ Prioritize links that appear to be:
 Keep a job only if:
 - it is in the United States or remote within the United States
 - it is a software engineer role or a close variant
-- it was posted within the last 24 hours
+- it was posted within the last 24 hours when that freshness can be verified
+
+If freshness is ambiguous or unavailable:
+- try to infer it from the page
+- if freshness still cannot be verified, keep the job eligible for application and record that the freshness was unverified
 
 ## Sort Rule
 

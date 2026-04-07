@@ -12,10 +12,12 @@ Automate this loop:
    - `site:jobs.ashbyhq.com`
    - force `Past 24 hours`
    - force Google's date-sorted / newest-first view when available
-2. Filter jobs posted in the last 24 hours
-3. Sort by most recent
-4. Keep a SQLite database of jobs already applied to
-5. Apply one by one until no jobs remain
+   - paginate exhaustively through reachable result pages and relevant listing pages
+2. Filter jobs posted in the last 24 hours when freshness can be verified
+3. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
+4. Sort by most recent
+5. Keep a SQLite database of jobs already applied to
+6. Apply one by one until no jobs remain
 
 ## Components
 
@@ -40,6 +42,7 @@ Automate this loop:
 - Never apply twice to the same job
 - Record every attempt
 - Skip jobs older than 24 hours
+- Do not skip a job solely because freshness could not be verified
 - Sort newest first
 - Continue until queue is empty
 - Never invent answers on application forms
@@ -77,7 +80,7 @@ The repo now includes a small Python CLI for the deterministic workflow steps:
 ```bash
 python -m job_apply_bot validate-profile
 python -m job_apply_bot start-run
-python -m job_apply_bot ingest-job --run-id 1 --raw-url "https://boards.greenhouse.io/acme/jobs/12345" --title "Software Engineer" --location "Remote, United States" --posted-at "2 hours ago"
+python -m job_apply_bot ingest-job --run-id 1 --raw-url "https://boards.greenhouse.io/acme/jobs/12345" --title "Software Engineer" --location "Remote, United States" --posted-at "New" --allow-unverifiable-freshness
 python -m job_apply_bot next-job --mark-applying
 python -m job_apply_bot record-application --job-key "<job_key>" --status submitted --run-id 1
 python -m job_apply_bot finish-run --run-id 1

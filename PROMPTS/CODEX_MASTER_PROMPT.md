@@ -22,7 +22,9 @@ Requirements:
   3. `site:jobs.ashbyhq.com`
 - For each Google query, force the `Past 24 hours` filter and Google's date-sorted / most-recent view when available.
 - Treat those three queries as source-keyed toggles: `jobright`, `greenhouse`, and `ashby`.
-- Filter to jobs posted within the last 24 hours.
+- Search exhaustively: continue through reachable Google result pages and relevant listing pages until no new candidates remain for each enabled source.
+- Filter to jobs posted within the last 24 hours when freshness can be verified.
+- If freshness still cannot be verified after reasonable extraction attempts, keep the job eligible for application and record that freshness was unverified.
 - Sort jobs by most recent first.
 - Skip any job already applied to or already attempted.
 - Apply to each remaining job one by one until no jobs are left.
@@ -40,6 +42,7 @@ Implementation constraints:
 Execution contract:
 - Create a run with `python -m job_apply_bot start-run`.
 - For each discovered candidate, call `python -m job_apply_bot ingest-job` with the extracted metadata so filtering and dedupe happen in SQLite-backed state.
+- Pass `--allow-unverifiable-freshness` to `python -m job_apply_bot ingest-job`.
 - Pull the next job with `python -m job_apply_bot next-job --mark-applying`.
 - After each application attempt, call `python -m job_apply_bot record-application`.
 - Finish with `python -m job_apply_bot finish-run` and print the returned summary.

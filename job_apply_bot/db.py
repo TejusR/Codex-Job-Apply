@@ -172,6 +172,7 @@ def ingest_job(
     discovered_at: str | None,
     role_keywords: list[str] | None,
     allowed_locations: list[str] | None,
+    allow_unverifiable_freshness: bool = False,
 ) -> IngestResult:
     canonical = canonicalize_url(raw_url, canonical_url)
     job_key = build_job_key(canonical)
@@ -209,7 +210,7 @@ def ingest_job(
                 freshness=freshness,
             )
 
-        if not freshness.is_verifiable:
+        if not freshness.is_verifiable and not allow_unverifiable_freshness:
             _upsert_job(
                 connection,
                 job_key=job_key,
@@ -234,7 +235,7 @@ def ingest_job(
                 freshness=freshness,
             )
 
-        if not freshness.is_recent:
+        if freshness.is_verifiable and not freshness.is_recent:
             _upsert_job(
                 connection,
                 job_key=job_key,
@@ -310,6 +311,11 @@ def ingest_job(
                 freshness=freshness,
             )
 
+        ready_status_reason = (
+            "unverified_freshness_allowed"
+            if not freshness.is_verifiable and allow_unverifiable_freshness
+            else None
+        )
         _upsert_job(
             connection,
             job_key=job_key,
@@ -322,15 +328,19 @@ def ingest_job(
             posted_at=freshness.normalized_posted_at,
             discovered_at=discovered_value,
             status="ready_to_apply",
-            status_reason=None,
+            status_reason=ready_status_reason,
         )
         _increment_run_counter(connection, run_id, "jobs_filtered_in")
         return IngestResult(
-            action="ready_to_apply",
+            action=(
+                "ready_to_apply_unverifiable_date"
+                if ready_status_reason is not None
+                else "ready_to_apply"
+            ),
             job_key=job_key,
             canonical_url=canonical,
             status="ready_to_apply",
-            status_reason=None,
+            status_reason=ready_status_reason,
             source=source_name,
             freshness=freshness,
         )

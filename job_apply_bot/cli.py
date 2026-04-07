@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_parser.add_argument("--discovered-at")
     ingest_parser.add_argument("--role-keywords")
     ingest_parser.add_argument("--allowed-locations")
+    ingest_parser.add_argument(
+        "--allow-unverifiable-freshness",
+        action="store_true",
+        help="Keep jobs with unverified freshness eligible for application.",
+    )
 
     next_parser = subparsers.add_parser("next-job", help="Return the next ready job.")
     next_parser.add_argument(
@@ -107,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             discovered_at=args.discovered_at,
             role_keywords=parse_csv(args.role_keywords),
             allowed_locations=parse_csv(args.allowed_locations),
+            allow_unverifiable_freshness=args.allow_unverifiable_freshness,
         )
         _print_json(result.to_dict())
         return 0

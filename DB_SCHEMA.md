@@ -72,6 +72,9 @@ Jobs:
 - failed
 - skipped_unverifiable_date
 
+Notes:
+- when `ingest-job` is run with `--allow-unverifiable-freshness`, a job with ambiguous freshness stays `ready_to_apply` and should carry a `status_reason` such as `unverified_freshness_allowed`
+
 Applications:
 - submitted
 - failed

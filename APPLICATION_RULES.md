@@ -5,10 +5,17 @@
 The automation must:
 
 - apply to jobs one by one
+- apply exhaustively until every discovered eligible job has been attempted or explicitly recorded as blocked
 - never submit the same application twice
 - stop only when no jobs remain
 - record success and failure
 - preserve enough metadata for auditability
+
+## Freshness Rules
+
+- prefer jobs with verifiable freshness in the last 24 hours
+- if a job appears in the search scope but its freshness cannot be verified after reasonable extraction attempts, do not skip it solely for that reason
+- record when a job moved forward with unverified freshness
 
 ## Form Rules
 
