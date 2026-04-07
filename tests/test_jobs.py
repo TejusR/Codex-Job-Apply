@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import unittest
+
+from job_apply_bot.jobs import build_job_key, canonicalize_url, evaluate_posted_at
+
+
+class CanonicalizeUrlTests(unittest.TestCase):
+    def test_strips_tracking_and_lowercases_host(self) -> None:
+        canonical = canonicalize_url(
+            "HTTPS://Boards.Greenhouse.io/acme/jobs/12345?utm_source=google&gh_src=abc&id=7"
+        )
+        self.assertEqual(
+            canonical,
+            "https://boards.greenhouse.io/acme/jobs/12345?id=7",
+        )
+
+    def test_build_job_key_is_deterministic(self) -> None:
+        url = "https://boards.greenhouse.io/acme/jobs/12345"
+        self.assertEqual(build_job_key(url), build_job_key(url))
+
+
+class EvaluatePostedAtTests(unittest.TestCase):
+    def test_relative_hours_are_recent(self) -> None:
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        freshness = evaluate_posted_at("2 hours ago", now=now)
+        self.assertTrue(freshness.is_recent)
+        self.assertTrue(freshness.is_verifiable)
+
+    def test_yesterday_without_time_is_not_verifiable(self) -> None:
+        now = datetime(2026, 4, 7, 12, 0, tzinfo=timezone.utc)
+        freshness = evaluate_posted_at("yesterday", now=now)
+        self.assertFalse(freshness.is_verifiable)
+        self.assertEqual(freshness.reason, "date_is_only_yesterday")
+
+
+if __name__ == "__main__":
+    unittest.main()

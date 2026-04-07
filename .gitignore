@@ -1,0 +1,17 @@
+# Local applicant/profile data
+.env
+.env.*
+!.env.example
+applicant.md
+!applicant.md.example
+resume/
+
+# Local workflow state and artifacts
+data/
+artifacts/
+.codex/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
