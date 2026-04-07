@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 
+from job_apply_bot.search import SUPPORTED_SEARCH_SITES
+
 
 class CliTests(unittest.TestCase):
     def _run_cli(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -48,7 +50,7 @@ class CliTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual(
                 payload["profile"]["enabled_search_sites"],
-                ["jobright", "greenhouse", "ashby"],
+                list(SUPPORTED_SEARCH_SITES),
             )
 
     def test_record_application_accepts_blocked_status(self) -> None:

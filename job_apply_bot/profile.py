@@ -4,17 +4,14 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 
+from .search import (
+    SEARCH_SITE_ALIASES,
+    SUPPORTED_SEARCH_SITES,
+    build_google_queries,
+    supported_search_sites_text,
+)
+
 UNKNOWN_TOKENS = {"", "unknown", "todo", "tbd", "n/a", "na", "fill-me"}
-SUPPORTED_SEARCH_SITES = ("jobright", "greenhouse", "ashby")
-SEARCH_SITE_ALIASES = {
-    "jobright": "jobright",
-    "jobright.ai": "jobright",
-    "greenhouse": "greenhouse",
-    "boards.greenhouse.io": "greenhouse",
-    "ashby": "ashby",
-    "ashbyhq": "ashby",
-    "jobs.ashbyhq.com": "ashby",
-}
 
 REQUIRED_ENV_KEYS = (
     "APPLICANT_FULL_NAME",
@@ -184,6 +181,10 @@ class ProfileValidationResult:
         cover_letter_path = resolve_profile_path(
             self.env_path.parent, self.env_values.get("APPLICANT_COVER_LETTER_PATH")
         )
+        target_role_keywords = parse_csv(self.env_values.get("APPLICANT_TARGET_ROLE_KEYWORDS"))
+        enabled_search_sites = parse_search_sites(
+            self.env_values.get("APPLICANT_ENABLED_SEARCH_SITES")
+        )
         return {
             "ok": self.ok,
             "env_path": str(self.env_path),
@@ -192,6 +193,9 @@ class ProfileValidationResult:
             "missing_optional_fields": self.missing_optional_fields,
             "missing_required_files": self.missing_required_files,
             "warnings": self.warnings,
+            "google_search_queries": build_google_queries(
+                enabled_search_sites, target_role_keywords
+            ),
             "profile": {
                 "full_name": normalize_value(self.env_values.get("APPLICANT_FULL_NAME")),
                 "email": normalize_value(self.env_values.get("APPLICANT_EMAIL")),
@@ -218,18 +222,14 @@ class ProfileValidationResult:
                 "current_visa_status": normalize_value(
                     self.env_values.get("APPLICANT_CURRENT_VISA_STATUS")
                 ),
-                "target_role_keywords": parse_csv(
-                    self.env_values.get("APPLICANT_TARGET_ROLE_KEYWORDS")
-                ),
+                "target_role_keywords": target_role_keywords,
                 "allowed_locations": parse_csv(
                     self.env_values.get("APPLICANT_ALLOWED_LOCATIONS")
                 ),
                 "remote_preference": normalize_value(
                     self.env_values.get("APPLICANT_REMOTE_PREFERENCE")
                 ),
-                "enabled_search_sites": parse_search_sites(
-                    self.env_values.get("APPLICANT_ENABLED_SEARCH_SITES")
-                ),
+                "enabled_search_sites": enabled_search_sites,
             },
             "applicant_markdown_sections": sorted(self.applicant_sections),
         }
@@ -268,7 +268,9 @@ def validate_profile(root: Path) -> ProfileValidationResult:
             warnings.append(
                 "APPLICANT_ENABLED_SEARCH_SITES includes unsupported values: "
                 + ", ".join(invalid_sites)
-                + ". Supported values: ashby, greenhouse, jobright."
+                + ". Supported values: "
+                + supported_search_sites_text()
+                + "."
             )
         raw_search_sites = normalize_value(env_values.get("APPLICANT_ENABLED_SEARCH_SITES"))
         if raw_search_sites is not None and not parse_search_sites(raw_search_sites):

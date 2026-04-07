@@ -12,13 +12,15 @@ Backlog draining is the only place the workflow should rely on the local SQLite 
 
 ## Step 1: Search
 
-Open a browser and search Google for the following:
+Run `python -m job_apply_bot validate-profile` first and use the returned `google_search_queries`.
 
-1. `jobright.ai`
-2. `site:boards.greenhouse.io ("software engineer" AND "united states")`
-3. `site:jobs.ashbyhq.com`
+Each Google query should be generated from:
+- the exact phrases in `APPLICANT_TARGET_ROLE_KEYWORDS`
+- the enabled source keys in `APPLICANT_ENABLED_SEARCH_SITES`
+- the source-domain registry in `SEARCH_SPEC.md`
 
-If `.env` includes `APPLICANT_ENABLED_SEARCH_SITES`, only run the enabled source queries.
+The query shape is:
+- `site:<domain> ("role 1" OR "role 2" ...) ("united states" OR "remote")`
 
 For each query:
 - force Google's `Past 24 hours` filter
@@ -66,16 +68,18 @@ Only proceed to application when the job becomes `ready_to_apply`.
 
 For each `ready_to_apply` job:
 
-1. Open job page
+1. Open job page in Playwright
 2. Confirm it is an application page
 3. Click apply if needed
-4. Fill required fields using local applicant data
-5. If a required answer is missing, make a reasonable assumption based on the applicant profile, resume, and `applicant.md` instead of skipping the job for that reason alone
-6. Keep any hard facts already present in the applicant files consistent, while using profile-based assumptions for missing supporting details such as salary expectations, start date, and concise free-response summaries
-7. Upload resume / cover letter if configured
-8. Review form
-9. Submit
-10. Record the application result in SQLite immediately
+4. If Playwright encounters a CAPTCHA or clear anti-bot challenge for that specific job, reopen the same job in `@camoufox-browser` and continue the application there
+5. Use the Camoufox fallback only for the current affected job, then return to Playwright for the rest of the run
+6. Fill required fields using local applicant data
+7. If a required answer is missing, make a reasonable assumption based on the applicant profile, resume, and `applicant.md` instead of skipping the job for that reason alone
+8. Keep any hard facts already present in the applicant files consistent, while using profile-based assumptions for missing supporting details such as salary expectations, start date, and concise free-response summaries
+9. Upload resume / cover letter if configured
+10. Review form
+11. Submit
+12. Record the application result in SQLite immediately
 
 Do not skip a job solely because some application information is unavailable if a reasonable profile-based assumption can be supplied.
 
@@ -84,9 +88,13 @@ Do not skip a job solely because some application information is unavailable if 
 If the application cannot complete cleanly:
 
 - record `failed` for transient or unverifiable submission outcomes
-- record `blocked` for permanent workflow blockers such as login walls, unsupported flows, closed roles, or disqualifying requirements
+- record `blocked` for permanent workflow blockers such as login walls, unsupported flows, closed roles, disqualifying requirements, or CAPTCHA challenges that still block submission after the Camoufox fallback attempt
 - record `incomplete` only when the site requires a truthful hard fact or file that cannot be reasonably inferred from the applicant materials
 - add one or more structured `record-finding` entries with the application status, workflow stage, category, summary, detail, and page URL
+
+If Playwright hits a CAPTCHA:
+- treat the CAPTCHA signal as a tool-switch trigger for that job instead of marking it blocked immediately
+- if Camoufox also cannot get past the challenge, record `blocked` and add a `record-finding` entry with category `captcha`
 
 Only `failed` is retryable later, and only if the same job is rediscovered in a future search run.
 `blocked`, `incomplete`, `submitted`, and `duplicate_skipped` are terminal outcomes for duplicate prevention.

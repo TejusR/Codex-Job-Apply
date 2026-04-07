@@ -6,6 +6,8 @@ from email.utils import parsedate_to_datetime
 import hashlib
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .search import infer_source_from_hostname
+
 TRACKING_QUERY_PREFIXES = ("utm_",)
 TRACKING_QUERY_KEYS = {
     "fbclid",
@@ -217,13 +219,7 @@ def build_job_key(canonical_url: str) -> str:
 
 def infer_source(url: str) -> str:
     hostname = urlsplit(url).hostname or ""
-    if "greenhouse" in hostname:
-        return "greenhouse"
-    if "ashbyhq" in hostname:
-        return "ashby"
-    if "jobright.ai" in hostname:
-        return "jobright"
-    return hostname or "unknown"
+    return infer_source_from_hostname(hostname)
 
 
 def title_matches_role(title: str | None, role_keywords: list[str] | None = None) -> bool:

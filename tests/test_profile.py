@@ -6,6 +6,7 @@ import textwrap
 import unittest
 
 from job_apply_bot.profile import validate_profile
+from job_apply_bot.search import SUPPORTED_SEARCH_SITES
 
 
 class ValidateProfileTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class ValidateProfileTests(unittest.TestCase):
 
             self.assertEqual(
                 result.to_dict()["profile"]["enabled_search_sites"],
-                ["jobright", "greenhouse", "ashby"],
+                list(SUPPORTED_SEARCH_SITES),
             )
 
     def test_invalid_search_sites_are_warned_and_valid_sites_are_preserved(self) -> None:
@@ -53,7 +54,7 @@ class ValidateProfileTests(unittest.TestCase):
                     APPLICANT_RESUME_PATH=resume.pdf
                     APPLICANT_US_WORK_AUTHORIZED=true
                     APPLICANT_REQUIRES_VISA_SPONSORSHIP=false
-                    APPLICANT_ENABLED_SEARCH_SITES=ashby, jobright.ai, monster
+                    APPLICANT_ENABLED_SEARCH_SITES=ashby, jobs.lever.co, app.dover.com, monster
                     """
                 ).strip(),
                 encoding="utf-8",
@@ -66,12 +67,55 @@ class ValidateProfileTests(unittest.TestCase):
             result = validate_profile(root)
 
             self.assertIn(
-                "APPLICANT_ENABLED_SEARCH_SITES includes unsupported values: monster. Supported values: ashby, greenhouse, jobright.",
+                "APPLICANT_ENABLED_SEARCH_SITES includes unsupported values: monster. Supported values: jobright, greenhouse, ashby, workable, jobvite, jazz, adp, lever, bamboohr, paylocity, smartrecruiters, gem, dover.",
                 result.warnings,
             )
             self.assertEqual(
                 result.to_dict()["profile"]["enabled_search_sites"],
-                ["ashby", "jobright"],
+                ["ashby", "lever", "dover"],
+            )
+
+    def test_google_search_queries_follow_enabled_sites_and_role_keywords(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "resume.pdf").write_text("stub", encoding="utf-8")
+            (root / ".env").write_text(
+                textwrap.dedent(
+                    """
+                    APPLICANT_FULL_NAME=Tejus Ramesh
+                    APPLICANT_EMAIL=rameshtejus@gmail.com
+                    APPLICANT_PHONE=(480)-810-7760
+                    APPLICANT_LOCATION=Tempe, AZ
+                    APPLICANT_RESUME_PATH=resume.pdf
+                    APPLICANT_US_WORK_AUTHORIZED=true
+                    APPLICANT_REQUIRES_VISA_SPONSORSHIP=false
+                    APPLICANT_TARGET_ROLE_KEYWORDS=software engineer, backend engineer, full stack engineer, software developer
+                    APPLICANT_ENABLED_SEARCH_SITES=jobs.lever.co, app.dover.com
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            (root / "applicant.md").write_text(
+                "# Applicant Details\n\n## Work Authorization Notes\nProvided\n\n## Reusable Highlights\nProvided\n",
+                encoding="utf-8",
+            )
+
+            payload = validate_profile(root).to_dict()
+
+            self.assertEqual(
+                payload["google_search_queries"],
+                [
+                    {
+                        "source_key": "lever",
+                        "domain": "jobs.lever.co",
+                        "query": 'site:jobs.lever.co ("software engineer" OR "backend engineer" OR "full stack engineer" OR "software developer") ("united states" OR "remote")',
+                    },
+                    {
+                        "source_key": "dover",
+                        "domain": "app.dover.com",
+                        "query": 'site:app.dover.com ("software engineer" OR "backend engineer" OR "full stack engineer" OR "software developer") ("united states" OR "remote")',
+                    },
+                ],
             )
 
     def test_missing_required_fields_are_reported(self) -> None:

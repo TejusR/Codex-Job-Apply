@@ -2,21 +2,47 @@
 
 ## Google Queries
 
-### Query A
-Source key: `jobright`
-`jobright.ai`
+Build Google queries from the current `.env` values instead of using a fixed three-query list.
 
-### Query B
-Source key: `greenhouse`
-`site:boards.greenhouse.io ("software engineer" AND "united states")`
+### Inputs
 
-### Query C
-Source key: `ashby`
-`site:jobs.ashbyhq.com`
+- `APPLICANT_TARGET_ROLE_KEYWORDS`
+- `APPLICANT_ENABLED_SEARCH_SITES`
+
+Use the exact role phrases from `APPLICANT_TARGET_ROLE_KEYWORDS`.
+The current workspace role list is:
+- `software engineer`
+- `backend engineer`
+- `full stack engineer`
+- `software developer`
+
+If `APPLICANT_ENABLED_SEARCH_SITES` is omitted, run all supported source keys.
+
+### Source Domains
+
+- `jobright` -> `jobright.ai`
+- `greenhouse` -> `boards.greenhouse.io`
+- `ashby` -> `jobs.ashbyhq.com`
+- `workable` -> `apply.workable.com`
+- `jobvite` -> `jobs.jobvite.com`
+- `jazz` -> `app.jazz.co`
+- `adp` -> `recruiting.adp.com`
+- `lever` -> `jobs.lever.co`
+- `bamboohr` -> `bamboohr.com`
+- `paylocity` -> `recruiting.paylocity.com`
+- `smartrecruiters` -> `jobs.smartrecruiters.com`
+- `gem` -> `jobs.gem.com`
+- `dover` -> `app.dover.com`
+
+### Query Template
+
+For each enabled source, run:
+
+`site:<domain> ("software engineer" OR "backend engineer" OR "full stack engineer" OR "software developer") ("united states" OR "remote")`
+
+In execution, prefer the `google_search_queries` returned by `python -m job_apply_bot validate-profile`, since those are generated from the current `.env`.
 
 ## Search Execution Rules
-
-If `.env` includes `APPLICANT_ENABLED_SEARCH_SITES`, only run the queries whose source keys are enabled.
 
 For each Google query:
 - force the `Past 24 hours` filter
