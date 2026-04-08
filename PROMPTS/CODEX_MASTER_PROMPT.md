@@ -9,7 +9,7 @@ Before doing browser work:
 - Load the root-level `.env` and `applicant.md`.
 - Use `resume/Tejus Resume_SDE_V2.pdf` as the resume source.
 - Run `python -m job_apply_bot validate-profile`.
-- Use the returned `google_search_queries` for Google discovery.
+- Then run `python -m job_apply_bot prepare-run` and use the returned run-scoped queries for Google discovery.
 - If any required applicant fields, files, Playwright MCP tools, or `@camoufox-browser` fallback capability are missing, list the exact missing items and continue only as far as possible without faking completion.
 - If `.env` includes `APPLICANT_ENABLED_SEARCH_SITES`, only use the enabled sources during search.
 
@@ -22,6 +22,7 @@ Requirements:
 - Supported source keys are `jobright`, `greenhouse`, `ashby`, `workable`, `jobvite`, `jazz`, `adp`, `lever`, `bamboohr`, `paylocity`, `smartrecruiters`, `gem`, and `dover`.
 - For each Google query, force the `Past 24 hours` filter and Google's date-sorted / most-recent view when available.
 - Search exhaustively: continue through reachable Google result pages and relevant listing pages until no new candidates remain for each enabled source.
+- Keep checking `python -m job_apply_bot workflow-status --run-id <id>` and do not stop until all seeded queries are terminal and there are no `ready_to_apply` or `applying` jobs left.
 - Process each discovered candidate immediately in the order it appears for the current query instead of batching all sources first.
 - If a result is a listing page rather than a direct job page, extract its child job links and process those child jobs one by one before returning to the search results.
 - Filter to jobs posted within the last 24 hours when freshness can be verified.
@@ -49,17 +50,21 @@ Implementation constraints:
 - Print a final summary with totals.
 
 Execution contract:
-- Create a run with `python -m job_apply_bot start-run`.
-- Optionally use `python -m job_apply_bot next-job --mark-applying` to drain leftover `ready_to_apply` backlog from interrupted runs before new discovery.
+- Create and seed the run with `python -m job_apply_bot prepare-run`.
+- Use `python -m job_apply_bot workflow-status --run-id <id>` as the completion gate for the whole run.
+- Drain leftover `ready_to_apply` backlog with `python -m job_apply_bot next-job --mark-applying` before claiming a new query.
+- Claim one pending query at a time with `python -m job_apply_bot next-query --run-id <id>`.
 - For each discovered candidate, call `python -m job_apply_bot ingest-job` with the extracted metadata so filtering and dedupe happen in SQLite-backed state.
 - Pass `--allow-unverifiable-freshness` to `python -m job_apply_bot ingest-job`.
 - If `ingest-job` returns `ready_to_apply`, apply immediately before moving to the next search result.
+- When a claimed query is exhausted, call `python -m job_apply_bot complete-query`.
+- If a query-level failure prevents finishing that query, call `python -m job_apply_bot fail-query` with the error message and continue the remaining queries.
 - Use Playwright MCP for search, extraction, and the default application flow.
 - If Playwright hits a CAPTCHA for a specific job, reopen that same job in `@camoufox-browser` and continue there for that one application attempt.
 - After each application attempt, call `python -m job_apply_bot record-application`.
 - When the application outcome is `failed`, `incomplete`, or `blocked`, also call `python -m job_apply_bot record-finding`.
 - If Camoufox also cannot get past the CAPTCHA, record the job as `blocked` and include a `record-finding` entry with category `captcha`.
-- Finish with `python -m job_apply_bot finish-run` and print the returned summary.
+- Finish with `python -m job_apply_bot finish-run` only after `workflow-status` reports `drained=true`, unless intentionally using `--force`, and print the returned summary.
 
 Execution behavior:
 - First inspect the repository and summarize the implementation plan.

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "application_status": {
+      "type": "string",
+      "enum": [
+        "submitted",
+        "failed",
+        "blocked",
+        "incomplete",
+        "duplicate_skipped"
+      ]
+    },
+    "confirmation_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "confirmation_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error_message": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {
+            "type": "string",
+            "minLength": 1
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "stage",
+          "category",
+          "summary"
+        ]
+      }
+    }
+  },
+  "required": [
+    "application_status",
+    "confirmation_text",
+    "confirmation_url",
+    "error_message",
+    "findings"
+  ]
+}

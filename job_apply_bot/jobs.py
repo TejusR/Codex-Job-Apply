@@ -226,8 +226,10 @@ def title_matches_role(title: str | None, role_keywords: list[str] | None = None
     if not title:
         return False
     lowered = title.lower()
+    normalized = lowered.replace("-", " ").replace("/", " ")
     for keyword in role_keywords or list(DEFAULT_ROLE_KEYWORDS):
-        if keyword.lower() in lowered:
+        candidate = keyword.lower()
+        if candidate in lowered or candidate in normalized:
             return True
     return False
 

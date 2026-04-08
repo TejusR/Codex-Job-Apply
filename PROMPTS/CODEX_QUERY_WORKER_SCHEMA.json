@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex Query Worker Result",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "const": "candidate"
+        },
+        "candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "raw_url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "canonical_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "company": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "location": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "posted_at": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "page_url": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "raw_url",
+            "canonical_url",
+            "source",
+            "title",
+            "company",
+            "location",
+            "posted_at",
+            "page_url"
+          ]
+        }
+      },
+      "required": [
+        "outcome",
+        "candidate"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "const": "skip_result"
+        },
+        "result_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skip_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "outcome",
+        "result_url",
+        "skip_reason"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "const": "exhausted"
+        }
+      },
+      "required": [
+        "outcome"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outcome": {
+          "const": "query_failed"
+        },
+        "error_message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "outcome",
+        "error_message"
+      ]
+    }
+  ]
+}

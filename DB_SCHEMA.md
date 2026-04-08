@@ -71,6 +71,26 @@ CREATE TABLE IF NOT EXISTS application_findings (
 );
 ```
 
+## Table: run_search_queries
+
+```sql
+CREATE TABLE IF NOT EXISTS run_search_queries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL,
+  source_key TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  query_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  started_at TEXT,
+  finished_at TEXT,
+  results_seen INTEGER NOT NULL DEFAULT 0,
+  jobs_ingested INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  FOREIGN KEY (run_id) REFERENCES runs(id),
+  UNIQUE(run_id, source_key)
+);
+```
+
 ## Indexes
 
 ```sql
@@ -79,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_posted_at ON jobs(posted_at);
 CREATE INDEX IF NOT EXISTS idx_applications_job_key ON applications(job_key);
 CREATE INDEX IF NOT EXISTS idx_application_findings_run_id ON application_findings(run_id);
 CREATE INDEX IF NOT EXISTS idx_application_findings_job_key ON application_findings(job_key);
+CREATE INDEX IF NOT EXISTS idx_run_search_queries_run_status ON run_search_queries(run_id, status);
 ```
 
 ## Recommended Status Values
@@ -99,6 +120,7 @@ Notes:
 - when `ingest-job` is run with `--allow-unverifiable-freshness`, a job with ambiguous freshness stays `ready_to_apply` and should carry a `status_reason` such as `unverified_freshness_allowed`
 - `failed` is retryable only when the same job is rediscovered in a later run
 - `applied`, `duplicate_skipped`, `incomplete`, `blocked`, and `applying` are terminal for duplicate checks
+- `prepare-run` requeues stale `applying` jobs to `ready_to_apply` with `status_reason=requeued_from_interrupted_run`
 
 Applications:
 - submitted
@@ -110,3 +132,18 @@ Applications:
 Findings:
 - use `application_findings` for structured blocker / failure capture instead of relying only on `applications.error_message`
 - `finish-run` should summarize findings by category and include the latest findings for blocked, incomplete, and failed jobs
+
+Run Search Queries:
+- pending
+- in_progress
+- completed
+- failed
+
+Run Notes:
+- `seen_job_keys` tracks same-run dedupe during discovery
+- `requeued_jobs_count` tracks how many stale `applying` jobs were moved back to `ready_to_apply` during `prepare-run`
+
+Run Completion:
+- `workflow-status` is drained only when `ready_to_apply=0`, `applying=0`, `queries_pending=0`, and `queries_in_progress=0`
+- `finish-run --run-id <id>` refuses unresolved work unless `--force` is supplied
+- `finish-run` includes a `search_summary` with total/completed/failed/pending/in-progress query counts and `requeued_jobs_count`

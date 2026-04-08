@@ -1,25 +1,26 @@
 # Job Apply Bot
 
-This project is a Codex workflow for finding recent jobs and applying one by one with Playwright MCP as the default browser engine and `@camoufox-browser` as a per-job CAPTCHA fallback.
+This project is a supervised Codex workflow for finding recent jobs and applying one by one with Playwright MCP as the default browser engine and `@camoufox-browser` as a per-job CAPTCHA fallback.
 
 ## Objective
 
 Automate this loop:
 
-1. Start a run in SQLite and optionally drain any leftover `ready_to_apply` backlog from an interrupted session
-2. Open a browser and run generated Google searches for each enabled source
+1. Prepare a run in SQLite, seed every enabled Google query, and requeue any stale `applying` backlog from an interrupted session
+2. Use run-scoped query state plus `workflow-status` to keep looping until every query is terminal and no `ready_to_apply` / `applying` jobs remain
+3. Open a browser and run generated Google searches for each enabled source
    - build each query from `APPLICANT_TARGET_ROLE_KEYWORDS` and the source domain registry in `SEARCH_SPEC.md`
    - use the query shape `site:<domain> ("role 1" OR "role 2" ...) ("united states" OR "remote")`
    - the current `.env` role list is `software engineer`, `backend engineer`, `full stack engineer`, `software developer`
    - force `Past 24 hours`
    - force Google's date-sorted / newest-first view when available
    - paginate exhaustively through reachable result pages and relevant listing pages
-3. Open discovered job links immediately, or expand listing pages into child job links and process those one by one before returning to search
-4. Filter jobs posted in the last 24 hours when freshness can be verified
-5. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
-6. Keep a SQLite database of jobs, application outcomes, and structured workflow findings
-7. Start each application in Playwright, switch only the affected job to `@camoufox-browser` if a CAPTCHA blocks Playwright, then return to Playwright for the rest of the run
-8. Apply one by one in discovery order until no jobs remain
+4. Open discovered job links immediately, or expand listing pages into child job links and process those one by one before returning to search
+5. Filter jobs posted in the last 24 hours when freshness can be verified
+6. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
+7. Keep a SQLite database of jobs, application outcomes, structured workflow findings, and per-run query progress
+8. Start each application in Playwright, switch only the affected job to `@camoufox-browser` if a CAPTCHA blocks Playwright, then return to Playwright for the rest of the run
+9. Apply one by one in discovery order until no jobs remain
 
 ## Components
 
@@ -36,6 +37,8 @@ Automate this loop:
 - `APPLICATION_RULES.md`: application logic and safety constraints
 - `MCP_SETUP.md`: MCP integration notes
 - `RUN_WITH_CODEX.md`: exactly how to ask Codex to execute the workflow
+- `PROMPTS/CODEX_QUERY_WORKER_PROMPT.md` / `PROMPTS/CODEX_APPLY_WORKER_PROMPT.md`: bounded worker prompts used by the supervised runner
+- `PROMPTS/CODEX_QUERY_WORKER_SCHEMA.json` / `PROMPTS/CODEX_APPLY_WORKER_SCHEMA.json`: machine-readable output contracts for those workers
 - `.env` / `.env.example`: root-level applicant fields used for forms and validation
 - `applicant.md` / `applicant.md.example`: root-level truthful free-form context for questions that do not fit neatly in env vars
 - `job_apply_bot/`: local CLI helpers for SQLite state, filtering, dedupe, and profile validation
@@ -99,22 +102,43 @@ If the key is omitted, the workflow defaults to all supported sources.
 
 ## Support CLI
 
-The repo now includes a small Python CLI for the deterministic workflow steps:
+The repo now includes a Python CLI for the deterministic workflow steps plus a supervised Codex runner:
 
 ```bash
 python -m job_apply_bot validate-profile
-python -m job_apply_bot start-run
+python -m job_apply_bot prepare-run
+python -m job_apply_bot claim-query --run-id 1
+python -m job_apply_bot discover-next-candidate-with-codex --run-id 1 --source-key greenhouse
+python -m job_apply_bot apply-job-with-codex --run-id 1 --job-key "<job_key>"
+python -m job_apply_bot run-workflow
+python -m job_apply_bot workflow-status --run-id 1
+python -m job_apply_bot next-query --run-id 1
+python -m job_apply_bot complete-query --run-id 1 --source-key greenhouse --results-seen 20 --jobs-ingested 4
+python -m job_apply_bot fail-query --run-id 1 --source-key ashby --message "Google rate limited the query"
 python -m job_apply_bot ingest-job --run-id 1 --raw-url "https://boards.greenhouse.io/acme/jobs/12345" --title "Software Engineer" --location "Remote, United States" --posted-at "New" --allow-unverifiable-freshness
 python -m job_apply_bot next-job --mark-applying
 python -m job_apply_bot record-application --job-key "<job_key>" --status submitted --run-id 1
 python -m job_apply_bot record-finding --job-key "<job_key>" --run-id 1 --application-status failed --stage submit --category confirmation_missing --summary "No confirmation page appeared"
 python -m job_apply_bot finish-run --run-id 1
+python -m unittest discover -s tests
 ```
 
 By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
-`next-job` remains available for draining leftover backlog from interrupted runs; new discovery should otherwise ingest and apply each candidate immediately.
-`validate-profile` also emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites.
+`prepare-run` validates the profile, creates the run, seeds run-scoped query rows, and requeues stale `applying` jobs back to `ready_to_apply`.
+`workflow-status` is the completion gate: the workflow is done only when it reports `drained=true`.
+`next-job` remains available for draining backlog in SQLite order; new discovery should otherwise ingest and apply each candidate immediately.
+`finish-run` now refuses unresolved work unless `--force` is supplied.
+`validate-profile` still emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites.
+`run-workflow` is the primary entrypoint. It owns the outer loop in Python and launches short-lived `codex exec` workers for one discovery step or one job application attempt at a time.
 
 ## Future Codex Run
 
-Once `.env` and `applicant.md` are filled in, the normal future instruction is just to reference `PROMPTS/CODEX_MASTER_PROMPT.md` from the repository root. That prompt now tells Codex to load the root applicant files, validate them, use Playwright MCP by default, switch to `@camoufox-browser` only when a specific job hits CAPTCHA protection, and use the CLI for SQLite tracking and summaries.
+Once `.env` and `applicant.md` are filled in, the normal entrypoint is:
+
+```bash
+python -m job_apply_bot run-workflow
+```
+
+This keeps the workflow lifecycle in Python while still using Codex for bounded browser work.
+
+`PROMPTS/CODEX_MASTER_PROMPT.md` remains available as a legacy/manual fallback when you explicitly want one long Codex-run conversation, but it is no longer the recommended primary entrypoint.

@@ -20,6 +20,42 @@ class CliTests(unittest.TestCase):
             text=True,
         )
 
+    def _write_valid_profile(
+        self, root: Path, *, enabled_search_sites: str = "greenhouse, ashby"
+    ) -> None:
+        (root / "resume.pdf").write_text("stub", encoding="utf-8")
+        (root / ".env").write_text(
+            "\n".join(
+                (
+                    "APPLICANT_FULL_NAME=Tejus Ramesh",
+                    "APPLICANT_EMAIL=rameshtejus@gmail.com",
+                    "APPLICANT_PHONE=(480)-810-7760",
+                    "APPLICANT_LOCATION=Tempe, AZ",
+                    "APPLICANT_RESUME_PATH=resume.pdf",
+                    "APPLICANT_US_WORK_AUTHORIZED=true",
+                    "APPLICANT_REQUIRES_VISA_SPONSORSHIP=false",
+                    "APPLICANT_TARGET_ROLE_KEYWORDS=software engineer, backend engineer",
+                    "APPLICANT_ALLOWED_LOCATIONS=United States, Remote, Arizona",
+                    f"APPLICANT_ENABLED_SEARCH_SITES={enabled_search_sites}",
+                )
+            ),
+            encoding="utf-8",
+        )
+        (root / "applicant.md").write_text(
+            "\n".join(
+                (
+                    "# Applicant Details",
+                    "",
+                    "## Work Authorization Notes",
+                    "Authorized to work in the United States.",
+                    "",
+                    "## Reusable Highlights",
+                    "Built backend systems and full-stack applications.",
+                )
+            ),
+            encoding="utf-8",
+        )
+
     def test_validate_profile_command_returns_json(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -156,6 +192,64 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["job_key"], job_key)
             self.assertEqual(payload["run_id"], run_id)
             self.assertEqual(payload["category"], "login_required")
+
+    def test_prepare_run_and_query_commands_return_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, enabled_search_sites="greenhouse, ashby")
+
+            prepared = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "prepare-run",
+                "--repo-root",
+                str(root),
+            )
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            prepared_payload = json.loads(prepared.stdout)
+            self.assertEqual(prepared_payload["requeued_jobs_count"], 0)
+            self.assertEqual(len(prepared_payload["queries"]), 2)
+
+            run_id = prepared_payload["run_id"]
+            next_query = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "next-query",
+                "--run-id",
+                str(run_id),
+            )
+            self.assertEqual(next_query.returncode, 0, next_query.stderr)
+            next_query_payload = json.loads(next_query.stdout)
+            self.assertEqual(next_query_payload["status"], "in_progress")
+
+            completed = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "complete-query",
+                "--run-id",
+                str(run_id),
+                "--source-key",
+                next_query_payload["source_key"],
+                "--results-seen",
+                "4",
+                "--jobs-ingested",
+                "2",
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+
+            status = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "workflow-status",
+                "--run-id",
+                str(run_id),
+            )
+            self.assertEqual(status.returncode, 0, status.stderr)
+            status_payload = json.loads(status.stdout)
+            self.assertEqual(status_payload["queries_completed"], 1)
+            self.assertEqual(status_payload["queries_pending"], 1)
+            self.assertFalse(status_payload["drained"])
 
 
 if __name__ == "__main__":

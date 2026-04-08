@@ -1,18 +1,25 @@
 # Workflow
 
-## Step 0: Start Run and Resume Any Backlog
+## Step 0: Prepare Run and Resume Any Backlog
 
 Before new discovery:
 
-- create a run row in SQLite
-- optionally drain any leftover `ready_to_apply` jobs from interrupted work
-- if backlog exists, use `next-job --mark-applying` to resume those jobs before running new searches
+- run `python -m job_apply_bot prepare-run`
+- this validates the profile, creates a run row in SQLite, seeds one `run_search_queries` row per enabled Google query, and requeues any stale `jobs.status='applying'` rows back to `ready_to_apply`
+- call `python -m job_apply_bot workflow-status --run-id <id>` immediately after `prepare-run`
+- if backlog exists, use `next-job --mark-applying` to resume those jobs before claiming a new search query
 
 Backlog draining is the only place the workflow should rely on the local SQLite sort order.
 
-## Step 1: Search
+## Step 1: Claim Exactly One Query at a Time
 
-Run `python -m job_apply_bot validate-profile` first and use the returned `google_search_queries`.
+After backlog is empty, call `python -m job_apply_bot next-query --run-id <id>`.
+
+If `next-query` returns `null`, there are no pending queries left for the run.
+
+Each query row is run-scoped and should be processed independently. If the run is interrupted mid-query, the next run will reseed that query from the start and rely on SQLite dedupe to avoid duplicate applications.
+
+## Step 2: Search Exhaustively for the Claimed Query
 
 Each Google query should be generated from:
 - the exact phrases in `APPLICANT_TARGET_ROLE_KEYWORDS`
@@ -34,7 +41,7 @@ Instead:
 - if a result is a listing page instead of a direct job page, extract the child job links from that page and process those child links one by one before returning to the search results
 - process links in the order the search result page or listing page presents them
 
-## Step 2: Extract Job Metadata and Ingest Immediately
+## Step 3: Extract Job Metadata and Ingest Immediately
 
 For each opened candidate, extract when available:
 
@@ -48,7 +55,7 @@ For each opened candidate, extract when available:
 
 Immediately call `ingest-job --allow-unverifiable-freshness` with the extracted metadata so SQLite performs normalization, filtering, and duplicate checks before any application attempt.
 
-## Step 3: Filter and Decide Immediately
+## Step 4: Filter and Decide Immediately
 
 Keep jobs posted in the last 24 hours when freshness can be verified.
 
@@ -64,7 +71,7 @@ If `ingest-job` reports any of the following, skip to the next candidate immedia
 
 Only proceed to application when the job becomes `ready_to_apply`.
 
-## Step 4: Apply
+## Step 5: Apply
 
 For each `ready_to_apply` job:
 
@@ -83,7 +90,7 @@ For each `ready_to_apply` job:
 
 Do not skip a job solely because some application information is unavailable if a reasonable profile-based assumption can be supplied.
 
-## Step 5: Record Findings for Non-Clean Outcomes
+## Step 6: Record Findings for Non-Clean Outcomes
 
 If the application cannot complete cleanly:
 
@@ -99,14 +106,20 @@ If Playwright hits a CAPTCHA:
 Only `failed` is retryable later, and only if the same job is rediscovered in a future search run.
 `blocked`, `incomplete`, `submitted`, and `duplicate_skipped` are terminal outcomes for duplicate prevention.
 
-## Step 6: Continue Until Empty
+## Step 7: Close the Claimed Query and Continue Until Empty
 
 Repeat until:
-- there are no backlog jobs left to resume
-- no enabled query has any new relevant candidates left
-- every discovered eligible job has been attempted or explicitly recorded as blocked, incomplete, duplicate, or submitted
+- after a query is fully processed, call `complete-query --run-id <id> --source-key <key>`
+- if a query-level failure prevents finishing that query, call `fail-query --run-id <id> --source-key <key> --message <message>` and continue with the remaining queries
+- after each backlog drain or query completion, call `workflow-status --run-id <id>`
+- the run is complete only when `workflow-status` reports:
+  - `ready_jobs = 0`
+  - `applying_jobs = 0`
+  - `queries_pending = 0`
+  - `queries_in_progress = 0`
+- `drained_with_errors = true` is acceptable when some queries failed but every query is terminal and no jobs remain
 
-## Step 7: Final Summary
+## Step 8: Final Summary
 
 Print:
 - jobs found
@@ -115,5 +128,9 @@ Print:
 - jobs attempted
 - jobs successfully applied
 - jobs failed
+- search queries completed / failed / pending
+- requeued stale jobs count
 - structured findings grouped by category
 - latest blocked / incomplete / failed finding summaries for workflow follow-up
+
+Only call `finish-run --run-id <id>` after `workflow-status` reports `drained=true`, unless an operator intentionally uses `--force`.
