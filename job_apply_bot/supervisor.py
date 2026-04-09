@@ -68,7 +68,26 @@ class WorkerConfig:
 
 
 class WorkerExecutionError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_bundle_dir: Path | None = None,
+        result_path: Path | None = None,
+        log_path: Path | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure_bundle_dir = failure_bundle_dir
+        self.result_path = result_path
+        self.log_path = log_path
+
+
+@dataclass(slots=True)
+class WorkerInvocationResult:
+    payload: dict[str, object]
+    failure_bundle_dir: Path | None
+    result_path: Path
+    log_path: Path
 
 
 def run_workflow(
@@ -170,7 +189,7 @@ def discover_next_candidate_with_codex(
         get_query_skipped_results(resolved_db_path, run_id=run_id, source_key=source_key),
     )
     try:
-        payload = _invoke_codex_worker(
+        invocation = _invoke_codex_worker(
             config,
             run_id=run_id,
             worker_type="query",
@@ -183,6 +202,7 @@ def discover_next_candidate_with_codex(
     except WorkerExecutionError as exc:
         return {"outcome": "query_failed", "error_message": str(exc)}
 
+    payload = invocation.payload
     if payload["outcome"] == "skip_result":
         record_query_skipped_result(
             resolved_db_path,
@@ -225,16 +245,21 @@ def apply_job_with_codex(
         job_timeout_seconds=max(1, int(timeout_seconds)),
         max_worker_retries=max(0, int(max_worker_retries)),
     )
-    prompt_text = _build_apply_worker_prompt(config.repo_root, validation_result, job)
+    runtime_context = _build_apply_worker_context(
+        config.repo_root,
+        validation_result,
+        job,
+    )
 
     try:
-        payload = _invoke_codex_worker(
+        invocation = _invoke_codex_worker(
             config,
             run_id=run_id,
             worker_type="apply",
             target_key=job_key,
             schema_path=APPLY_WORKER_SCHEMA_PATH,
-            prompt_text=prompt_text,
+            runtime_context=runtime_context,
+            prompt_template_path=APPLY_WORKER_PROMPT_PATH,
             timeout_seconds=config.job_timeout_seconds,
             validator=_validate_apply_worker_payload,
         )
@@ -249,6 +274,16 @@ def apply_job_with_codex(
             error_message=error_message,
             run_id=run_id,
         )
+        failure_manifest_path = _write_failure_manifest(
+            exc.failure_bundle_dir,
+            run_id=run_id,
+            job_key=job_key,
+            application_status="failed",
+            error_message=error_message,
+            result_path=exc.result_path,
+            log_path=exc.log_path,
+            worker_result=None,
+        )
         finding = record_finding(
             resolved_db_path,
             job_key=job_key,
@@ -257,7 +292,10 @@ def apply_job_with_codex(
             stage="worker",
             category="codex_worker_error",
             summary="Codex apply worker did not return a valid result",
-            detail=error_message,
+            detail=_detail_with_bundle_path(
+                error_message,
+                failure_manifest_path.parent if failure_manifest_path is not None else None,
+            ),
             page_url=str(job.get("canonical_url") or job.get("raw_url") or ""),
         )
         return {
@@ -272,6 +310,7 @@ def apply_job_with_codex(
             "findings": [finding],
         }
 
+    payload = invocation.payload
     application = record_application(
         resolved_db_path,
         job_key=job_key,
@@ -284,6 +323,16 @@ def apply_job_with_codex(
 
     findings: list[dict[str, object]] = []
     if payload["application_status"] in _UNSUCCESSFUL_APPLICATION_STATUSES:
+        failure_manifest_path = _write_failure_manifest(
+            invocation.failure_bundle_dir,
+            run_id=run_id,
+            job_key=job_key,
+            application_status=str(payload["application_status"]),
+            error_message=_as_nullable_string(payload.get("error_message")),
+            result_path=invocation.result_path,
+            log_path=invocation.log_path,
+            worker_result=payload,
+        )
         for finding_payload in payload["findings"]:
             findings.append(
                 record_finding(
@@ -294,10 +343,15 @@ def apply_job_with_codex(
                     stage=str(finding_payload["stage"]),
                     category=str(finding_payload["category"]),
                     summary=str(finding_payload["summary"]),
-                    detail=_as_nullable_string(finding_payload.get("detail")),
+                    detail=_detail_with_bundle_path(
+                        _as_nullable_string(finding_payload.get("detail")),
+                        failure_manifest_path.parent if failure_manifest_path is not None else None,
+                    ),
                     page_url=_as_nullable_string(finding_payload.get("page_url")),
                 )
             )
+    else:
+        _cleanup_failure_bundle(invocation.failure_bundle_dir)
 
     return {
         "worker_result": payload,
@@ -429,10 +483,12 @@ def _invoke_codex_worker(
     worker_type: str,
     target_key: str,
     schema_path: Path,
-    prompt_text: str,
+    prompt_text: str | None = None,
+    runtime_context: dict[str, object] | None = None,
+    prompt_template_path: Path | None = None,
     timeout_seconds: int,
     validator,
-) -> dict[str, object]:
+) -> WorkerInvocationResult:
     if not schema_path.exists():
         raise WorkerExecutionError(f"Schema file is missing: {schema_path}")
 
@@ -441,6 +497,9 @@ def _invoke_codex_worker(
     safe_target_key = _safe_filename(target_key)
     artifact_sequence = _next_artifact_sequence(artifact_dir, safe_target_key)
     last_error = f"Codex {worker_type} worker did not complete."
+    last_failure_bundle_dir: Path | None = None
+    last_result_path: Path | None = None
+    last_log_path: Path | None = None
 
     for attempt_number in range(1, config.max_worker_retries + 2):
         result_path = (
@@ -451,8 +510,28 @@ def _invoke_codex_worker(
             artifact_dir
             / f"{safe_target_key}.invocation-{artifact_sequence}.attempt-{attempt_number}.log.txt"
         )
+        failure_bundle_dir: Path | None = None
+        prompt_for_attempt = prompt_text
         if result_path.exists():
             result_path.unlink()
+        if log_path.exists():
+            log_path.unlink()
+
+        if runtime_context is not None and prompt_template_path is not None:
+            prompt_for_attempt, failure_bundle_dir = _prepare_worker_prompt(
+                worker_type=worker_type,
+                bundle_root=artifact_dir,
+                runtime_context=runtime_context,
+                prompt_template_path=prompt_template_path,
+                safe_target_key=safe_target_key,
+                artifact_sequence=artifact_sequence,
+                attempt_number=attempt_number,
+            )
+
+        if prompt_for_attempt is None:
+            raise WorkerExecutionError(
+                f"Codex {worker_type} worker prompt was not provided."
+            )
 
         attempt = start_worker_attempt(
             config.db_path,
@@ -463,6 +542,9 @@ def _invoke_codex_worker(
             result_path=result_path,
             log_path=log_path,
         )
+        last_failure_bundle_dir = failure_bundle_dir
+        last_result_path = result_path
+        last_log_path = log_path
         command = [
             config.codex_bin,
             "exec",
@@ -484,8 +566,10 @@ def _invoke_codex_worker(
             completed = subprocess.run(
                 command,
                 cwd=config.repo_root,
-                input=prompt_text,
+                input=prompt_for_attempt,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 timeout=timeout_seconds,
                 check=False,
@@ -495,7 +579,7 @@ def _invoke_codex_worker(
             _write_worker_log(
                 log_path,
                 command=command,
-                prompt_text=prompt_text,
+                prompt_text=prompt_for_attempt,
                 stdout=_coerce_timeout_stream(exc.stdout),
                 stderr=_coerce_timeout_stream(exc.stderr),
                 exit_code=None,
@@ -513,7 +597,22 @@ def _invoke_codex_worker(
                     exit_code=None,
                     error_message=None,
                 )
-                return recovered_payload
+                return WorkerInvocationResult(
+                    payload=recovered_payload,
+                    failure_bundle_dir=failure_bundle_dir,
+                    result_path=result_path,
+                    log_path=log_path,
+                )
+            _write_failure_manifest(
+                failure_bundle_dir,
+                run_id=run_id,
+                job_key=target_key,
+                application_status="failed" if worker_type == "apply" else None,
+                error_message=last_error,
+                result_path=result_path,
+                log_path=log_path,
+                worker_result=None,
+            )
             finish_worker_attempt(
                 config.db_path,
                 attempt_id=int(attempt["id"]),
@@ -526,7 +625,7 @@ def _invoke_codex_worker(
         _write_worker_log(
             log_path,
             command=command,
-            prompt_text=prompt_text,
+            prompt_text=prompt_for_attempt,
             stdout=completed.stdout,
             stderr=completed.stderr,
             exit_code=completed.returncode,
@@ -535,6 +634,16 @@ def _invoke_codex_worker(
         if completed.returncode != 0:
             last_error = (
                 f"Codex {worker_type} worker exited with code {completed.returncode}."
+            )
+            _write_failure_manifest(
+                failure_bundle_dir,
+                run_id=run_id,
+                job_key=target_key,
+                application_status="failed" if worker_type == "apply" else None,
+                error_message=last_error,
+                result_path=result_path,
+                log_path=log_path,
+                worker_result=None,
             )
             finish_worker_attempt(
                 config.db_path,
@@ -548,6 +657,16 @@ def _invoke_codex_worker(
         if not result_path.exists():
             last_error = (
                 f"Codex {worker_type} worker did not produce an output file at {result_path}."
+            )
+            _write_failure_manifest(
+                failure_bundle_dir,
+                run_id=run_id,
+                job_key=target_key,
+                application_status="failed" if worker_type == "apply" else None,
+                error_message=last_error,
+                result_path=result_path,
+                log_path=log_path,
+                worker_result=None,
             )
             finish_worker_attempt(
                 config.db_path,
@@ -564,6 +683,16 @@ def _invoke_codex_worker(
                 raise ValueError("Output file was missing after existence check.")
         except ValueError as exc:
             last_error = f"Codex {worker_type} worker returned invalid output: {exc}"
+            _write_failure_manifest(
+                failure_bundle_dir,
+                run_id=run_id,
+                job_key=target_key,
+                application_status="failed" if worker_type == "apply" else None,
+                error_message=last_error,
+                result_path=result_path,
+                log_path=log_path,
+                worker_result=None,
+            )
             finish_worker_attempt(
                 config.db_path,
                 attempt_id=int(attempt["id"]),
@@ -580,9 +709,19 @@ def _invoke_codex_worker(
             exit_code=completed.returncode,
             error_message=None,
         )
-        return payload
+        return WorkerInvocationResult(
+            payload=payload,
+            failure_bundle_dir=failure_bundle_dir,
+            result_path=result_path,
+            log_path=log_path,
+        )
 
-    raise WorkerExecutionError(last_error)
+    raise WorkerExecutionError(
+        last_error,
+        failure_bundle_dir=last_failure_bundle_dir,
+        result_path=last_result_path,
+        log_path=last_log_path,
+    )
 
 
 def _build_query_worker_prompt(
@@ -618,14 +757,13 @@ def _build_query_worker_prompt(
     return _compose_prompt(template, context)
 
 
-def _build_apply_worker_prompt(
+def _build_apply_worker_context(
     repo_root: Path,
     validation: ProfileValidationResult,
     job: dict[str, object],
-) -> str:
-    template = _load_text(APPLY_WORKER_PROMPT_PATH)
+) -> dict[str, object]:
     applicant_notes = parse_applicant_markdown(repo_root / "applicant.md")
-    context = {
+    return {
         "repo_root": str(repo_root),
         "docs": {
             "workflow": str(repo_root / "WORKFLOW.md"),
@@ -645,7 +783,6 @@ def _build_apply_worker_prompt(
             "duplicate_skipped",
         ],
     }
-    return _compose_prompt(template, context)
 
 
 def _compose_prompt(template: str, context: dict[str, object]) -> str:
@@ -701,6 +838,15 @@ def _validate_query_worker_payload(payload: object) -> None:
 def _validate_apply_worker_payload(payload: object) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Apply worker output must be a JSON object.")
+    for field_name in (
+        "application_status",
+        "confirmation_text",
+        "confirmation_url",
+        "error_message",
+        "findings",
+    ):
+        if field_name not in payload:
+            raise ValueError(f"Apply worker output is missing '{field_name}'.")
     status = payload.get("application_status")
     if status not in {
         "submitted",
@@ -712,8 +858,7 @@ def _validate_apply_worker_payload(payload: object) -> None:
         raise ValueError(f"Unsupported application status: {status!r}")
 
     for field_name in ("confirmation_text", "confirmation_url", "error_message"):
-        if field_name in payload:
-            _require_nullable_string(payload, field_name)
+        _require_nullable_string(payload, field_name)
 
     findings = payload.get("findings")
     if not isinstance(findings, list):
@@ -726,15 +871,98 @@ def _validate_apply_worker_payload(payload: object) -> None:
     for finding in findings:
         if not isinstance(finding, dict):
             raise ValueError("Each finding must be an object.")
+        for field_name in ("stage", "category", "summary", "detail", "page_url"):
+            if field_name not in finding:
+                raise ValueError(f"Finding output is missing '{field_name}'.")
         for field_name in ("stage", "category", "summary"):
             _require_non_empty_string(finding, field_name)
         for field_name in ("detail", "page_url"):
-            if field_name in finding:
-                _require_nullable_string(finding, field_name)
+            _require_nullable_string(finding, field_name)
+
+
+def _prepare_worker_prompt(
+    *,
+    worker_type: str,
+    bundle_root: Path,
+    runtime_context: dict[str, object],
+    prompt_template_path: Path,
+    safe_target_key: str,
+    artifact_sequence: int,
+    attempt_number: int,
+) -> tuple[str, Path | None]:
+    template = _load_text(prompt_template_path)
+    if worker_type != "apply":
+        return _compose_prompt(template, runtime_context), None
+
+    failure_bundle_dir = (
+        bundle_root
+        / f"{safe_target_key}.invocation-{artifact_sequence}.attempt-{attempt_number}.failure"
+    )
+    failure_bundle_paths = _failure_bundle_paths(failure_bundle_dir)
+    context = dict(runtime_context)
+    context["failure_bundle"] = {
+        key: str(path) for key, path in failure_bundle_paths.items()
+    }
+    failure_bundle_dir.mkdir(parents=True, exist_ok=True)
+    _write_json_file(failure_bundle_paths["runtime_context_path"], context)
+    prompt_text = _compose_prompt(template, context)
+    failure_bundle_paths["prompt_path"].write_text(prompt_text, encoding="utf-8")
+    return prompt_text, failure_bundle_dir
 
 
 def _artifact_dir(db_path: Path, run_id: int, worker_type: str) -> Path:
     return db_path.resolve().parent / "codex_worker_artifacts" / f"run-{run_id}" / worker_type
+
+
+def _failure_bundle_paths(bundle_dir: Path) -> dict[str, Path]:
+    return {
+        "bundle_dir": bundle_dir,
+        "runtime_context_path": bundle_dir / "runtime_context.json",
+        "prompt_path": bundle_dir / "prompt.txt",
+        "failure_manifest_path": bundle_dir / "failure_manifest.json",
+        "playwright_snapshot_path": bundle_dir / "playwright_snapshot.md",
+        "playwright_screenshot_path": bundle_dir / "playwright_screenshot.png",
+        "page_html_path": bundle_dir / "page_html.html",
+        "console_path": bundle_dir / "console.json",
+        "network_path": bundle_dir / "network.json",
+    }
+
+
+def _write_failure_manifest(
+    bundle_dir: Path | None,
+    *,
+    run_id: int,
+    job_key: str,
+    application_status: str | None,
+    error_message: str | None,
+    result_path: Path | None,
+    log_path: Path | None,
+    worker_result: dict[str, object] | None,
+) -> Path | None:
+    if bundle_dir is None:
+        return None
+
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    bundle_paths = _failure_bundle_paths(bundle_dir)
+    manifest = {
+        "run_id": run_id,
+        "job_key": job_key,
+        "application_status": application_status,
+        "error_message": error_message,
+        "worker_result": worker_result,
+        "result_path": str(result_path) if result_path is not None else None,
+        "log_path": str(log_path) if log_path is not None else None,
+        "artifacts": {
+            key: {
+                "path": str(path),
+                "exists": path.exists(),
+            }
+            for key, path in bundle_paths.items()
+            if key != "bundle_dir"
+        },
+    }
+    _write_json_file(bundle_paths["failure_manifest_path"], manifest)
+    return bundle_paths["failure_manifest_path"]
 
 
 def _write_worker_log(
@@ -747,6 +975,8 @@ def _write_worker_log(
     exit_code: int | None,
     error_message: str | None,
 ) -> None:
+    safe_stdout = _coerce_timeout_stream(stdout)
+    safe_stderr = _coerce_timeout_stream(stderr)
     contents = [
         "COMMAND:",
         json.dumps(command),
@@ -762,14 +992,19 @@ def _write_worker_log(
             prompt_text,
             "",
             "STDOUT:",
-            stdout,
+            safe_stdout,
             "",
             "STDERR:",
-            stderr,
+            safe_stderr,
             "",
         ]
     )
     log_path.write_text("\n".join(contents), encoding="utf-8")
+
+
+def _write_json_file(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _coerce_timeout_stream(value: str | bytes | None) -> str:
@@ -787,6 +1022,23 @@ def _load_text(path: Path) -> str:
 def _safe_filename(value: str) -> str:
     normalized = _SAFE_FILENAME_PATTERN.sub("-", value).strip("-")
     return normalized or "worker"
+
+
+def _cleanup_failure_bundle(bundle_dir: Path | None) -> None:
+    if bundle_dir is None or not bundle_dir.exists():
+        return
+    shutil.rmtree(bundle_dir, ignore_errors=True)
+
+
+def _detail_with_bundle_path(detail: str | None, bundle_dir: Path | None) -> str | None:
+    if bundle_dir is None:
+        return detail
+    bundle_line = f"Failure bundle: {bundle_dir}"
+    if detail is None or not detail.strip():
+        return bundle_line
+    if bundle_line in detail:
+        return detail
+    return f"{detail}\n\n{bundle_line}"
 
 
 def _next_artifact_sequence(artifact_dir: Path, safe_target_key: str) -> int:

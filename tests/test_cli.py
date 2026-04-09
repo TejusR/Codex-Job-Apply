@@ -251,6 +251,86 @@ class CliTests(unittest.TestCase):
             self.assertEqual(status_payload["queries_pending"], 1)
             self.assertFalse(status_payload["drained"])
 
+    def test_requeue_runner_failures_command_returns_requeued_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "jobs.sqlite3"
+
+            started = self._run_cli("--db-path", str(db_path), "start-run")
+            self.assertEqual(started.returncode, 0, started.stderr)
+            run_id = json.loads(started.stdout)["id"]
+
+            ingested = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "ingest-job",
+                "--run-id",
+                str(run_id),
+                "--raw-url",
+                "https://boards.greenhouse.io/acme/jobs/12345",
+                "--title",
+                "Software Engineer",
+                "--company",
+                "Acme",
+                "--location",
+                "Remote, United States",
+                "--posted-at",
+                "2 hours ago",
+            )
+            self.assertEqual(ingested.returncode, 0, ingested.stderr)
+            job_key = json.loads(ingested.stdout)["job_key"]
+
+            recorded = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "record-application",
+                "--job-key",
+                job_key,
+                "--status",
+                "failed",
+                "--confirmation-url",
+                "https://boards.greenhouse.io/acme/jobs/12345",
+                "--error-message",
+                "Codex apply worker exited with code 1.",
+                "--run-id",
+                str(run_id),
+            )
+            self.assertEqual(recorded.returncode, 0, recorded.stderr)
+
+            finding = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "record-finding",
+                "--job-key",
+                job_key,
+                "--run-id",
+                str(run_id),
+                "--application-status",
+                "failed",
+                "--stage",
+                "worker",
+                "--category",
+                "codex_worker_error",
+                "--summary",
+                "Worker crashed",
+                "--detail",
+                "Failure bundle: data/example",
+                "--page-url",
+                "https://boards.greenhouse.io/acme/jobs/12345",
+            )
+            self.assertEqual(finding.returncode, 0, finding.stderr)
+
+            requeued = self._run_cli(
+                "--db-path",
+                str(db_path),
+                "requeue-runner-failures",
+                "--run-id",
+                str(run_id),
+            )
+            self.assertEqual(requeued.returncode, 0, requeued.stderr)
+            payload = json.loads(requeued.stdout)
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["job_keys"], [job_key])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -504,6 +504,73 @@ def requeue_stale_applying_jobs(db_path: Path, *, run_id: int | None = None) -> 
     return requeued_jobs_count
 
 
+def requeue_runner_failures(db_path: Path, *, run_id: int) -> dict[str, object]:
+    with managed_connection(db_path) as connection:
+        run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Run {run_id} does not exist.")
+
+        rows = connection.execute(
+            """
+            WITH latest_failed_applications AS (
+                SELECT applications.job_key, applications.status
+                FROM applications
+                JOIN (
+                    SELECT job_key, MAX(id) AS max_id
+                    FROM applications
+                    GROUP BY job_key
+                ) latest_applications
+                  ON latest_applications.max_id = applications.id
+            ),
+            latest_run_findings AS (
+                SELECT application_findings.job_key,
+                       application_findings.category,
+                       application_findings.application_status
+                FROM application_findings
+                JOIN (
+                    SELECT job_key, MAX(id) AS max_id
+                    FROM application_findings
+                    WHERE run_id = ?
+                    GROUP BY job_key
+                ) latest_findings
+                  ON latest_findings.max_id = application_findings.id
+            )
+            SELECT jobs.job_key
+            FROM jobs
+            JOIN latest_failed_applications
+              ON latest_failed_applications.job_key = jobs.job_key
+            JOIN latest_run_findings
+              ON latest_run_findings.job_key = jobs.job_key
+            WHERE latest_failed_applications.status = 'failed'
+              AND latest_run_findings.application_status = 'failed'
+              AND latest_run_findings.category = 'codex_worker_error'
+            ORDER BY jobs.last_updated_at DESC, jobs.job_key ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        job_keys = [str(row["job_key"]) for row in rows]
+
+        if job_keys:
+            now = format_timestamp(utc_now())
+            placeholders = ", ".join("?" for _ in job_keys)
+            connection.execute(
+                f"""
+                UPDATE jobs
+                SET status = 'ready_to_apply',
+                    status_reason = 'requeued_runner_failure',
+                    last_updated_at = ?
+                WHERE job_key IN ({placeholders})
+                """,
+                (now, *job_keys),
+            )
+
+    return {
+        "run_id": run_id,
+        "count": len(job_keys),
+        "job_keys": job_keys,
+    }
+
+
 def next_query(db_path: Path, *, run_id: int) -> dict[str, object] | None:
     with managed_connection(db_path) as connection:
         run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()

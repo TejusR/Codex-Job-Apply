@@ -66,11 +66,15 @@ class SupervisorWorkflowTests(unittest.TestCase):
             cwd: Path,
             input: str,
             text: bool,
+            encoding: str | None = None,
+            errors: str | None = None,
             capture_output: bool,
             timeout: int,
             check: bool,
         ) -> subprocess.CompletedProcess[str]:
             self.assertTrue(text)
+            self.assertEqual(encoding, "utf-8")
+            self.assertEqual(errors, "replace")
             self.assertTrue(capture_output)
             self.assertFalse(check)
             self.assertTrue(steps, "Unexpected extra Codex invocation")
@@ -101,6 +105,22 @@ class SupervisorWorkflowTests(unittest.TestCase):
             expected_schema = step.get("schema")
             if expected_schema is not None:
                 self.assertEqual(schema_name, expected_schema)
+
+            bundle_artifacts = step.get("write_bundle_artifacts")
+            if bundle_artifacts:
+                failure_bundle = context.get("failure_bundle")
+                self.assertIsInstance(
+                    failure_bundle,
+                    dict,
+                    "Failure bundle paths were not provided in the apply worker context",
+                )
+                for artifact_key, contents in bundle_artifacts.items():
+                    artifact_path = Path(str(failure_bundle[artifact_key]))
+                    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                    if isinstance(contents, bytes):
+                        artifact_path.write_bytes(contents)
+                    else:
+                        artifact_path.write_text(str(contents), encoding="utf-8")
 
             if step.get("timeout"):
                 if "write_json" in step:
@@ -200,6 +220,9 @@ class SupervisorWorkflowTests(unittest.TestCase):
             self.assertIn(
                 "https://boards.greenhouse.io/acme/jobs/12345",
                 calls[2]["context"]["current_run_seen_urls"],
+            )
+            self.assertFalse(
+                Path(calls[1]["context"]["failure_bundle"]["bundle_dir"]).exists()
             )
 
     def test_run_workflow_reclaims_in_progress_query_before_pending(self) -> None:
@@ -370,6 +393,11 @@ class SupervisorWorkflowTests(unittest.TestCase):
 
             self.assertEqual(result["application"]["status"], "failed")
             self.assertEqual(result["findings"][0]["category"], "codex_worker_error")
+            failure_bundle_dir = Path(calls[-1]["context"]["failure_bundle"]["bundle_dir"])
+            self.assertTrue((failure_bundle_dir / "runtime_context.json").exists())
+            self.assertTrue((failure_bundle_dir / "prompt.txt").exists())
+            self.assertTrue((failure_bundle_dir / "failure_manifest.json").exists())
+            self.assertIn(str(failure_bundle_dir), result["findings"][0]["detail"])
             self.assertEqual(
                 self._read_attempt_statuses(db_path),
                 [("invalid_output", 0), ("invalid_output", 0)],
@@ -476,6 +504,10 @@ class SupervisorWorkflowTests(unittest.TestCase):
                                     }
                                 ],
                             },
+                            "write_bundle_artifacts": {
+                                "playwright_snapshot_path": "# Snapshot",
+                                "console_path": '{"level":"info"}',
+                            },
                         }
                     ]
 
@@ -493,6 +525,15 @@ class SupervisorWorkflowTests(unittest.TestCase):
                     self.assertEqual(result["application"]["status"], status)
                     self.assertEqual(len(result["findings"]), 1)
                     self.assertEqual(result["findings"][0]["category"], f"{status}_category")
+                    failure_bundle_dir = Path(
+                        calls[0]["context"]["failure_bundle"]["bundle_dir"]
+                    )
+                    self.assertTrue((failure_bundle_dir / "runtime_context.json").exists())
+                    self.assertTrue((failure_bundle_dir / "prompt.txt").exists())
+                    self.assertTrue((failure_bundle_dir / "failure_manifest.json").exists())
+                    self.assertTrue((failure_bundle_dir / "playwright_snapshot.md").exists())
+                    self.assertTrue((failure_bundle_dir / "console.json").exists())
+                    self.assertIn(str(failure_bundle_dir), result["findings"][0]["detail"])
 
     def test_discovery_timeout_with_valid_output_file_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -544,6 +585,82 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 self._read_attempt_statuses(db_path),
                 [("succeeded", None)],
             )
+
+    def test_run_workflow_tolerates_missing_worker_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root)
+            calls: list[dict[str, object]] = []
+            steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "outcome": "candidate",
+                        "candidate": {
+                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "source": "greenhouse",
+                            "title": "Software Engineer",
+                            "company": "Acme",
+                            "location": "Remote, United States",
+                            "posted_at": "2 hours ago",
+                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                        },
+                        "result_url": None,
+                        "skip_reason": None,
+                        "error_message": None,
+                    },
+                    "stdout": None,
+                    "stderr": None,
+                },
+                {
+                    "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "application_status": "submitted",
+                        "confirmation_text": "Application received",
+                        "confirmation_url": "https://boards.greenhouse.io/acme/jobs/12345/thanks",
+                        "error_message": None,
+                        "findings": [],
+                    },
+                    "stdout": None,
+                    "stderr": None,
+                },
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "outcome": "exhausted",
+                        "candidate": None,
+                        "result_url": None,
+                        "skip_reason": None,
+                        "error_message": None,
+                    },
+                    "stdout": None,
+                    "stderr": None,
+                },
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                summary = run_workflow(db_path, repo_root=root)
+
+            self.assertEqual(summary["jobs_applied"], 1)
+            self.assertEqual(summary["search_summary"]["completed_queries"], 1)
+
+    def test_apply_worker_schema_requires_all_finding_fields(self) -> None:
+        schema_path = (
+            Path(__file__).resolve().parents[1]
+            / "PROMPTS"
+            / "CODEX_APPLY_WORKER_SCHEMA.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        finding_items = schema["properties"]["findings"]["items"]
+        self.assertEqual(
+            sorted(finding_items["required"]),
+            sorted(finding_items["properties"].keys()),
+        )
 
 
 if __name__ == "__main__":

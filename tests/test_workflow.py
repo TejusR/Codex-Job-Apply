@@ -14,6 +14,7 @@ from job_apply_bot.db import (
     prepare_run,
     record_application,
     record_finding,
+    requeue_runner_failures,
     start_run,
     workflow_status,
 )
@@ -252,6 +253,105 @@ class WorkflowStateTests(unittest.TestCase):
                     self.assertEqual(
                         duplicate.status_reason, f"existing_application_{status}"
                     )
+
+    def test_requeue_runner_failures_only_requeues_codex_worker_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "jobs.sqlite3"
+            run = start_run(db_path)
+            run_id = int(run["id"])
+
+            runner_failed = ingest_job(
+                db_path,
+                run_id=run_id,
+                raw_url="https://boards.greenhouse.io/acme/jobs/12345",
+                canonical_url=None,
+                source=None,
+                title="Software Engineer",
+                company="Acme",
+                location="Remote, United States",
+                posted_at="2 hours ago",
+                discovered_at="2026-04-07T12:00:00Z",
+                role_keywords=[],
+                allowed_locations=[],
+            )
+            normal_failed = ingest_job(
+                db_path,
+                run_id=run_id,
+                raw_url="https://jobs.ashbyhq.com/acme/999/application",
+                canonical_url=None,
+                source=None,
+                title="Software Engineer",
+                company="Acme",
+                location="Remote, United States",
+                posted_at="1 hour ago",
+                discovered_at="2026-04-07T12:30:00Z",
+                role_keywords=[],
+                allowed_locations=[],
+            )
+
+            record_application(
+                db_path,
+                job_key=runner_failed.job_key,
+                status="failed",
+                confirmation_text=None,
+                confirmation_url=runner_failed.canonical_url,
+                error_message="Codex apply worker exited with code 1.",
+                run_id=run_id,
+            )
+            record_finding(
+                db_path,
+                job_key=runner_failed.job_key,
+                run_id=run_id,
+                application_status="failed",
+                stage="worker",
+                category="codex_worker_error",
+                summary="Worker crashed",
+                detail="Failure bundle: data/example",
+                page_url=runner_failed.canonical_url,
+            )
+
+            record_application(
+                db_path,
+                job_key=normal_failed.job_key,
+                status="failed",
+                confirmation_text=None,
+                confirmation_url=normal_failed.canonical_url,
+                error_message="Submission outcome could not be verified.",
+                run_id=run_id,
+            )
+            record_finding(
+                db_path,
+                job_key=normal_failed.job_key,
+                run_id=run_id,
+                application_status="failed",
+                stage="submit",
+                category="confirmation_missing",
+                summary="No confirmation page",
+                detail="Observed submit with no receipt.",
+                page_url=normal_failed.canonical_url,
+            )
+
+            requeued = requeue_runner_failures(db_path, run_id=run_id)
+
+            self.assertEqual(requeued["count"], 1)
+            self.assertEqual(requeued["job_keys"], [runner_failed.job_key])
+
+            job = next_job(db_path, mark_applying=True)
+            self.assertIsNotNone(job)
+            self.assertEqual(job["job_key"], runner_failed.job_key)
+            record_application(
+                db_path,
+                job_key=runner_failed.job_key,
+                status="submitted",
+                confirmation_text="Application received",
+                confirmation_url="https://boards.greenhouse.io/acme/jobs/12345/thanks",
+                error_message=None,
+                run_id=run_id,
+            )
+
+            summary = finish_run(db_path, run_id)
+            self.assertEqual(summary["jobs_applied"], 1)
+            self.assertEqual(summary["jobs_failed"], 2)
 
     def test_finish_run_includes_findings_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -34,6 +34,23 @@ Use `PROMPTS/CODEX_MASTER_PROMPT.md` only as a legacy/manual fallback when you e
 
 The spawned Codex workers run in Codex's non-interactive bypass mode so Playwright/Camoufox MCP tools remain callable from those child sessions.
 
+## Failure Recovery
+
+Unsuccessful apply attempts now write raw local failure bundles under:
+
+```text
+data/codex_worker_artifacts/run-<id>/apply/
+```
+
+Those bundles may include screenshots, HTML, browser logs, runtime context, and filled personal info.
+
+If a job failed because of an internal worker problem after discovery, recover it in the same run with:
+
+```bash
+python -m job_apply_bot requeue-runner-failures --run-id <id>
+python -m job_apply_bot run-workflow --run-id <id>
+```
+
 ## Legacy Manual Mode
 
 If you still want a single long Codex conversation, open Codex in the repo root and reference `PROMPTS/CODEX_MASTER_PROMPT.md`.

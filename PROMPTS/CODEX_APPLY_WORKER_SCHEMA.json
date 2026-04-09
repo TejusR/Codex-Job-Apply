@@ -65,7 +65,9 @@
         "required": [
           "stage",
           "category",
-          "summary"
+          "summary",
+          "detail",
+          "page_url"
         ]
       }
     }

@@ -15,6 +15,7 @@ from .db import (
     prepare_run,
     record_application,
     record_finding,
+    requeue_runner_failures,
     start_run,
     workflow_status,
 )
@@ -264,6 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="How many times to retry an invalid or failed worker after the first attempt.",
     )
 
+    requeue_failures_parser = subparsers.add_parser(
+        "requeue-runner-failures",
+        help="Requeue jobs in a run whose latest failure was caused by an internal Codex worker error.",
+    )
+    requeue_failures_parser.add_argument("--run-id", type=int, required=True)
+
     return parser
 
 
@@ -417,6 +424,11 @@ def main(argv: list[str] | None = None) -> int:
             job_timeout_seconds=args.job_timeout_seconds,
             max_worker_retries=args.max_worker_retries,
         )
+        _print_json(result)
+        return 0
+
+    if args.command == "requeue-runner-failures":
+        result = requeue_runner_failures(args.db_path.resolve(), run_id=args.run_id)
         _print_json(result)
         return 0
 

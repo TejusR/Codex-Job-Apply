@@ -111,6 +111,7 @@ python -m job_apply_bot claim-query --run-id 1
 python -m job_apply_bot discover-next-candidate-with-codex --run-id 1 --source-key greenhouse
 python -m job_apply_bot apply-job-with-codex --run-id 1 --job-key "<job_key>"
 python -m job_apply_bot run-workflow
+python -m job_apply_bot requeue-runner-failures --run-id 1
 python -m job_apply_bot workflow-status --run-id 1
 python -m job_apply_bot next-query --run-id 1
 python -m job_apply_bot complete-query --run-id 1 --source-key greenhouse --results-seen 20 --jobs-ingested 4
@@ -131,6 +132,8 @@ By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
 `validate-profile` still emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites.
 `run-workflow` is the primary entrypoint. It owns the outer loop in Python and launches short-lived `codex exec` workers for one discovery step or one job application attempt at a time.
 Those workers run in Codex's non-interactive bypass mode so browser MCP tools remain usable from spawned sessions.
+Any unsuccessful apply attempt now leaves a raw local failure bundle under `data/codex_worker_artifacts/run-<id>/apply/`. These bundles may contain PII-filled form data, screenshots, HTML, and browser logs.
+If an apply attempt fails because of an internal worker problem such as `codex_worker_error`, use `requeue-runner-failures` to put those jobs back into `ready_to_apply` within the same run after you deploy the fix.
 
 ## Future Codex Run
 
