@@ -6,7 +6,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
+import job_apply_bot.cli as cli
 from job_apply_bot.search import SUPPORTED_SEARCH_SITES
 
 
@@ -330,6 +332,54 @@ class CliTests(unittest.TestCase):
             payload = json.loads(requeued.stdout)
             self.assertEqual(payload["count"], 1)
             self.assertEqual(payload["job_keys"], [job_key])
+
+    def test_run_workflow_command_defaults_to_no_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+
+            with patch.object(cli, "run_workflow", return_value={"ok": True}) as mocked_run, patch.object(
+                cli, "_print_json"
+            ):
+                exit_code = cli.main(
+                    [
+                        "--db-path",
+                        str(db_path),
+                        "run-workflow",
+                        "--repo-root",
+                        str(root),
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIsNone(mocked_run.call_args.kwargs["query_timeout_seconds"])
+            self.assertIsNone(mocked_run.call_args.kwargs["job_timeout_seconds"])
+
+    def test_run_workflow_command_forwards_explicit_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+
+            with patch.object(cli, "run_workflow", return_value={"ok": True}) as mocked_run, patch.object(
+                cli, "_print_json"
+            ):
+                exit_code = cli.main(
+                    [
+                        "--db-path",
+                        str(db_path),
+                        "run-workflow",
+                        "--repo-root",
+                        str(root),
+                        "--query-timeout-seconds",
+                        "17",
+                        "--job-timeout-seconds",
+                        "29",
+                    ]
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(mocked_run.call_args.kwargs["query_timeout_seconds"], 17)
+            self.assertEqual(mocked_run.call_args.kwargs["job_timeout_seconds"], 29)
 
 
 if __name__ == "__main__":

@@ -189,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout-seconds",
         type=int,
         default=DEFAULT_QUERY_TIMEOUT_SECONDS,
-        help="Timeout for a single query worker attempt.",
+        help="Timeout for a single query worker attempt. Omit for no overall timeout.",
     )
     discover_parser.add_argument(
         "--max-worker-retries",
@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout-seconds",
         type=int,
         default=DEFAULT_JOB_TIMEOUT_SECONDS,
-        help="Timeout for a single apply worker attempt.",
+        help="Timeout for a single apply worker attempt. Omit for no overall timeout.",
     )
     apply_parser.add_argument(
         "--max-worker-retries",
@@ -250,13 +250,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--query-timeout-seconds",
         type=int,
         default=DEFAULT_QUERY_TIMEOUT_SECONDS,
-        help="Timeout for a single query worker attempt.",
+        help="Timeout for a single query worker attempt. Omit for no overall timeout.",
     )
     run_workflow_parser.add_argument(
         "--job-timeout-seconds",
         type=int,
         default=DEFAULT_JOB_TIMEOUT_SECONDS,
-        help="Timeout for a single job worker attempt.",
+        help="Timeout for a single job worker attempt. Omit for no overall timeout.",
     )
     run_workflow_parser.add_argument(
         "--max-worker-retries",

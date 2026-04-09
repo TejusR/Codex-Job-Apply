@@ -17,7 +17,7 @@ After backlog is empty, call `python -m job_apply_bot next-query --run-id <id>`.
 
 If `next-query` returns `null`, there are no pending queries left for the run.
 
-Each query row is run-scoped and should be processed independently. If the run is interrupted mid-query, the next run will reseed that query from the start and rely on SQLite dedupe to avoid duplicate applications.
+Each query row is run-scoped and should be processed independently. If the same run is resumed with `run-workflow --run-id <id>`, continue any `in_progress` query from its persisted `results_seen` and `jobs_ingested` counters. A brand-new `prepare-run` still creates a fresh run and reseeds queries from the start.
 
 ## Step 2: Search Exhaustively for the Claimed Query
 
@@ -33,6 +33,7 @@ For each query:
 - force Google's `Past 24 hours` filter
 - force Google's date-sorted / newest-first view when available
 - continue across all reachable Google result pages and relevant listing pages until there are no new candidate links left for that source
+- if Google shows a CAPTCHA or anti-bot interstitial, switch that same discovery step to a visible Camoufox window, wait as long as needed for manual solve, then continue in the same Camoufox session
 
 Do not collect the full query into a batch before applying.
 
@@ -54,6 +55,11 @@ For each opened candidate, extract when available:
 - date discovered
 
 Immediately call `ingest-job --allow-unverifiable-freshness` with the extracted metadata so SQLite performs normalization, filtering, and duplicate checks before any application attempt.
+
+Persist query progress after every processed discovery result:
+- after each persisted `skip_result`, update `run_search_queries.results_seen`
+- after each persisted candidate ingestion, update both `results_seen` and `jobs_ingested`
+- keep the query row `in_progress` until `complete-query` or `fail-query`
 
 ## Step 4: Filter and Decide Immediately
 
@@ -78,15 +84,17 @@ For each `ready_to_apply` job:
 1. Open job page in Playwright
 2. Confirm it is an application page
 3. Click apply if needed
-4. If Playwright encounters a CAPTCHA or clear anti-bot challenge for that specific job, reopen the same job in `@camoufox-browser` and continue the application there
-5. Use the Camoufox fallback only for the current affected job, then return to Playwright for the rest of the run
-6. Fill required fields using local applicant data
-7. If a required answer is missing, make a reasonable assumption based on the applicant profile, resume, and `applicant.md` instead of skipping the job for that reason alone
-8. Keep any hard facts already present in the applicant files consistent, while using profile-based assumptions for missing supporting details such as salary expectations, start date, and concise free-response summaries
-9. Upload resume / cover letter if configured
-10. Review form
-11. Submit
-12. Record the application result in SQLite immediately
+4. If Playwright encounters a CAPTCHA or clear anti-bot challenge for that specific job, reopen or reuse the same job in a visible `@camoufox-browser` window and continue the application there
+5. Wait as long as needed for the user to solve the challenge manually, using bounded polling with no overall timeout
+6. Continue the same application in that same Camoufox session after the challenge clears
+7. Use the Camoufox fallback only for the current affected job, then return to Playwright for the rest of the run
+8. Fill required fields using local applicant data
+9. If a required answer is missing, make a reasonable assumption based on the applicant profile, resume, and `applicant.md` instead of skipping the job for that reason alone
+10. Keep any hard facts already present in the applicant files consistent, while using profile-based assumptions for missing supporting details such as salary expectations, start date, and concise free-response summaries
+11. Upload resume / cover letter if configured
+12. Review form
+13. Submit
+14. Record the application result in SQLite immediately
 
 Do not skip a job solely because some application information is unavailable if a reasonable profile-based assumption can be supplied.
 
@@ -95,12 +103,13 @@ Do not skip a job solely because some application information is unavailable if 
 If the application cannot complete cleanly:
 
 - record `failed` for transient or unverifiable submission outcomes
-- record `blocked` for permanent workflow blockers such as login walls, unsupported flows, closed roles, disqualifying requirements, or CAPTCHA challenges that still block submission after the Camoufox fallback attempt
+- record `blocked` for permanent workflow blockers such as login walls, unsupported flows, closed roles, disqualifying requirements, or CAPTCHA challenges that still block submission after the manual Camoufox fallback attempt
 - record `incomplete` only when the site requires a truthful hard fact or file that cannot be reasonably inferred from the applicant materials
 - add one or more structured `record-finding` entries with the application status, workflow stage, category, summary, detail, and page URL
 
 If Playwright hits a CAPTCHA:
 - treat the CAPTCHA signal as a tool-switch trigger for that job instead of marking it blocked immediately
+- open or reuse a visible Camoufox window, wait indefinitely for manual solve if needed, and continue the same job there
 - if Camoufox also cannot get past the challenge, record `blocked` and add a `record-finding` entry with category `captcha`
 
 Only `failed` is retryable later, and only if the same job is rediscovered in a future search run.
@@ -111,6 +120,7 @@ Only `failed` is retryable later, and only if the same job is rediscovered in a 
 Repeat until:
 - after a query is fully processed, call `complete-query --run-id <id> --source-key <key>`
 - if a query-level failure prevents finishing that query, call `fail-query --run-id <id> --source-key <key> --message <message>` and continue with the remaining queries
+- a run may stall indefinitely while a visible CAPTCHA challenge is waiting for manual user interaction
 - after each backlog drain or query completion, call `workflow-status --run-id <id>`
 - the run is complete only when `workflow-status` reports:
   - `ready_jobs = 0`

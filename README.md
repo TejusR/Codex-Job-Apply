@@ -1,6 +1,6 @@
 # Job Apply Bot
 
-This project is a supervised Codex workflow for finding recent jobs and applying one by one with Playwright MCP as the default browser engine and `@camoufox-browser` as a per-job CAPTCHA fallback.
+This project is a supervised Codex workflow for finding recent jobs and applying one by one with Playwright MCP as the default browser engine and `@camoufox-browser` as a visible manual-solve CAPTCHA fallback for both search discovery and applications.
 
 ## Objective
 
@@ -19,14 +19,14 @@ Automate this loop:
 5. Filter jobs posted in the last 24 hours when freshness can be verified
 6. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
 7. Keep a SQLite database of jobs, application outcomes, structured workflow findings, and per-run query progress
-8. Start each application in Playwright, switch only the affected job to `@camoufox-browser` if a CAPTCHA blocks Playwright, then return to Playwright for the rest of the run
+8. Start each discovery/application step in Playwright, switch only the affected step to `@camoufox-browser` if a CAPTCHA blocks Playwright, then return to Playwright for the rest of the run
 9. Apply one by one in discovery order until no jobs remain
 
 ## Components
 
 - Codex for orchestration and code generation
 - Playwright MCP for search, extraction, and the default application flow
-- `@camoufox-browser` for CAPTCHA or anti-bot fallback on a single blocked job
+- `@camoufox-browser` for visible manual CAPTCHA or anti-bot fallback on a single affected discovery/application step
 - SQLite for persistence and deduplication
 
 ## Files
@@ -56,13 +56,15 @@ Automate this loop:
 - Keep hard facts consistent with the applicant files
 - Use reasonable profile-based assumptions for missing supporting application answers instead of skipping a job solely for that reason
 - Only `failed` outcomes are retryable, and only when the job is rediscovered in a future run
+- Persist `run_search_queries.results_seen` and `jobs_ingested` after each processed discovery result so same-run resume is accurate
 
 ## Browser Strategy
 
 - Use Playwright MCP for Google search, listing traversal, metadata extraction, and normal application flows.
-- If Playwright encounters a visible CAPTCHA, reCAPTCHA iframe, challenge page, or a failure clearly caused by anti-bot protection for the current job, reopen that same job in `@camoufox-browser`.
-- Keep the Camoufox fallback scoped to that one affected job, then return to Playwright for the rest of the run.
-- If Camoufox also cannot get past the challenge, record the application as `blocked` and store a structured finding with category `captcha`.
+- If Playwright encounters a visible CAPTCHA, reCAPTCHA iframe, challenge page, or a failure clearly caused by anti-bot protection for the current search/application step, reopen or reuse that same step in `@camoufox-browser`.
+- Visible Camoufox waits may last indefinitely while the user solves the challenge manually.
+- Keep the Camoufox fallback scoped to that one affected step, then return to Playwright for the rest of the run.
+- If Camoufox cannot get past the challenge, record the discovery step as `query_failed` or the application as `blocked`, depending on which workflow step was affected.
 
 ## Applicant Inputs
 

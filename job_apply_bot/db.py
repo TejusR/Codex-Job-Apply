@@ -705,6 +705,50 @@ def fail_query(
     )
 
 
+def checkpoint_query_progress(
+    db_path: Path,
+    *,
+    run_id: int,
+    source_key: str,
+    results_seen: int | None = None,
+    jobs_ingested: int | None = None,
+) -> dict[str, object]:
+    with managed_connection(db_path) as connection:
+        query_row = connection.execute(
+            """
+            SELECT *
+            FROM run_search_queries
+            WHERE run_id = ? AND source_key = ?
+            """,
+            (run_id, source_key),
+        ).fetchone()
+        if query_row is None:
+            raise ValueError(
+                f"Run {run_id} does not have a search query for source '{source_key}'."
+            )
+
+        connection.execute(
+            """
+            UPDATE run_search_queries
+            SET status = 'in_progress',
+                finished_at = NULL,
+                results_seen = COALESCE(?, results_seen),
+                jobs_ingested = COALESCE(?, jobs_ingested)
+            WHERE id = ?
+            """,
+            (results_seen, jobs_ingested, query_row["id"]),
+        )
+        updated = connection.execute(
+            """
+            SELECT *
+            FROM run_search_queries
+            WHERE id = ?
+            """,
+            (query_row["id"],),
+        ).fetchone()
+    return dict(updated) if updated is not None else {"run_id": run_id, "source_key": source_key}
+
+
 def workflow_status(db_path: Path, *, run_id: int) -> dict[str, object]:
     with managed_connection(db_path) as connection:
         run = connection.execute("SELECT notes FROM runs WHERE id = ?", (run_id,)).fetchone()

@@ -9,6 +9,7 @@ import shutil
 import subprocess
 
 from .db import (
+    checkpoint_query_progress,
     claim_query,
     complete_query,
     fail_query,
@@ -48,8 +49,8 @@ def _default_codex_bin() -> str:
 
 
 DEFAULT_CODEX_BIN = _default_codex_bin()
-DEFAULT_QUERY_TIMEOUT_SECONDS = 300
-DEFAULT_JOB_TIMEOUT_SECONDS = 600
+DEFAULT_QUERY_TIMEOUT_SECONDS = None
+DEFAULT_JOB_TIMEOUT_SECONDS = None
 DEFAULT_MAX_WORKER_RETRIES = 1
 
 _UNSUCCESSFUL_APPLICATION_STATUSES = {"failed", "blocked", "incomplete"}
@@ -62,8 +63,8 @@ class WorkerConfig:
     db_path: Path
     codex_bin: str = DEFAULT_CODEX_BIN
     codex_profile: str | None = None
-    query_timeout_seconds: int = DEFAULT_QUERY_TIMEOUT_SECONDS
-    job_timeout_seconds: int = DEFAULT_JOB_TIMEOUT_SECONDS
+    query_timeout_seconds: int | None = DEFAULT_QUERY_TIMEOUT_SECONDS
+    job_timeout_seconds: int | None = DEFAULT_JOB_TIMEOUT_SECONDS
     max_worker_retries: int = DEFAULT_MAX_WORKER_RETRIES
 
 
@@ -97,8 +98,8 @@ def run_workflow(
     run_id: int | None = None,
     codex_bin: str = DEFAULT_CODEX_BIN,
     codex_profile: str | None = None,
-    query_timeout_seconds: int = DEFAULT_QUERY_TIMEOUT_SECONDS,
-    job_timeout_seconds: int = DEFAULT_JOB_TIMEOUT_SECONDS,
+    query_timeout_seconds: int | None = DEFAULT_QUERY_TIMEOUT_SECONDS,
+    job_timeout_seconds: int | None = DEFAULT_JOB_TIMEOUT_SECONDS,
     max_worker_retries: int = DEFAULT_MAX_WORKER_RETRIES,
 ) -> dict[str, object]:
     resolved_repo_root = repo_root.resolve()
@@ -109,8 +110,8 @@ def run_workflow(
         db_path=resolved_db_path,
         codex_bin=codex_bin,
         codex_profile=codex_profile,
-        query_timeout_seconds=max(1, int(query_timeout_seconds)),
-        job_timeout_seconds=max(1, int(job_timeout_seconds)),
+        query_timeout_seconds=_normalize_timeout_seconds(query_timeout_seconds),
+        job_timeout_seconds=_normalize_timeout_seconds(job_timeout_seconds),
         max_worker_retries=max(0, int(max_worker_retries)),
     )
 
@@ -158,7 +159,7 @@ def discover_next_candidate_with_codex(
     source_key: str,
     codex_bin: str = DEFAULT_CODEX_BIN,
     codex_profile: str | None = None,
-    timeout_seconds: int = DEFAULT_QUERY_TIMEOUT_SECONDS,
+    timeout_seconds: int | None = DEFAULT_QUERY_TIMEOUT_SECONDS,
     max_worker_retries: int = DEFAULT_MAX_WORKER_RETRIES,
     validation: ProfileValidationResult | None = None,
 ) -> dict[str, object]:
@@ -178,7 +179,7 @@ def discover_next_candidate_with_codex(
         db_path=resolved_db_path,
         codex_bin=codex_bin,
         codex_profile=codex_profile,
-        query_timeout_seconds=max(1, int(timeout_seconds)),
+        query_timeout_seconds=_normalize_timeout_seconds(timeout_seconds),
         max_worker_retries=max(0, int(max_worker_retries)),
     )
     prompt_text = _build_query_worker_prompt(
@@ -211,6 +212,13 @@ def discover_next_candidate_with_codex(
             url=str(payload["result_url"]),
             reason=str(payload["skip_reason"]),
         )
+        checkpoint_query_progress(
+            resolved_db_path,
+            run_id=run_id,
+            source_key=source_key,
+            results_seen=int(query.get("results_seen") or 0) + 1,
+            jobs_ingested=int(query.get("jobs_ingested") or 0),
+        )
     return payload
 
 
@@ -222,7 +230,7 @@ def apply_job_with_codex(
     job_key: str,
     codex_bin: str = DEFAULT_CODEX_BIN,
     codex_profile: str | None = None,
-    timeout_seconds: int = DEFAULT_JOB_TIMEOUT_SECONDS,
+    timeout_seconds: int | None = DEFAULT_JOB_TIMEOUT_SECONDS,
     max_worker_retries: int = DEFAULT_MAX_WORKER_RETRIES,
     validation: ProfileValidationResult | None = None,
 ) -> dict[str, object]:
@@ -242,7 +250,7 @@ def apply_job_with_codex(
         db_path=resolved_db_path,
         codex_bin=codex_bin,
         codex_profile=codex_profile,
-        job_timeout_seconds=max(1, int(timeout_seconds)),
+        job_timeout_seconds=_normalize_timeout_seconds(timeout_seconds),
         max_worker_retries=max(0, int(max_worker_retries)),
     )
     runtime_context = _build_apply_worker_context(
@@ -424,6 +432,13 @@ def _drain_query(
                 allow_unverifiable_freshness=True,
             )
             jobs_ingested += 1
+            checkpoint_query_progress(
+                config.db_path,
+                run_id=run_id,
+                source_key=source_key,
+                results_seen=results_seen,
+                jobs_ingested=jobs_ingested,
+            )
             if ingest_result.status == "ready_to_apply":
                 apply_job_with_codex(
                     config.db_path,
@@ -486,7 +501,7 @@ def _invoke_codex_worker(
     prompt_text: str | None = None,
     runtime_context: dict[str, object] | None = None,
     prompt_template_path: Path | None = None,
-    timeout_seconds: int,
+    timeout_seconds: int | None,
     validator,
 ) -> WorkerInvocationResult:
     if not schema_path.exists():
@@ -575,7 +590,7 @@ def _invoke_codex_worker(
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            last_error = f"Codex {worker_type} worker timed out after {timeout_seconds} seconds."
+            last_error = _worker_timeout_message(worker_type, timeout_seconds)
             _write_worker_log(
                 log_path,
                 command=command,
@@ -721,7 +736,19 @@ def _invoke_codex_worker(
         failure_bundle_dir=last_failure_bundle_dir,
         result_path=last_result_path,
         log_path=last_log_path,
-    )
+        )
+
+
+def _normalize_timeout_seconds(timeout_seconds: int | None) -> int | None:
+    if timeout_seconds is None:
+        return None
+    return max(1, int(timeout_seconds))
+
+
+def _worker_timeout_message(worker_type: str, timeout_seconds: int | None) -> str:
+    if timeout_seconds is None:
+        return f"Codex {worker_type} worker timed out."
+    return f"Codex {worker_type} worker timed out after {timeout_seconds} seconds."
 
 
 def _build_query_worker_prompt(

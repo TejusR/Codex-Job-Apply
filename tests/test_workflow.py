@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 
 from job_apply_bot.db import (
+    checkpoint_query_progress,
     complete_query,
     fail_query,
     finish_run,
@@ -515,6 +517,48 @@ class WorkflowStateTests(unittest.TestCase):
             self.assertEqual(status["applying_jobs"], 0)
             self.assertEqual(status["queries_pending"], 3)
             self.assertFalse(status["drained"])
+
+    def test_checkpoint_query_progress_preserves_in_progress_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, enabled_search_sites="greenhouse")
+
+            prepared = prepare_run(db_path, root)
+            run_id = int(prepared["run_id"])
+
+            query = next_query(db_path, run_id=run_id)
+            self.assertIsNotNone(query)
+            started_at = query["started_at"]
+
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    UPDATE run_search_queries
+                    SET finished_at = ?, last_error = ?
+                    WHERE id = ?
+                    """,
+                    ("2026-04-09T00:00:00Z", "waiting_on_manual_captcha", query["id"]),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            checkpointed = checkpoint_query_progress(
+                db_path,
+                run_id=run_id,
+                source_key=query["source_key"],
+                results_seen=4,
+                jobs_ingested=2,
+            )
+
+            self.assertEqual(checkpointed["status"], "in_progress")
+            self.assertEqual(checkpointed["started_at"], started_at)
+            self.assertIsNone(checkpointed["finished_at"])
+            self.assertEqual(checkpointed["last_error"], "waiting_on_manual_captcha")
+            self.assertEqual(checkpointed["results_seen"], 4)
+            self.assertEqual(checkpointed["jobs_ingested"], 2)
 
     def test_query_lifecycle_updates_workflow_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

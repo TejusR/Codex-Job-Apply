@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from job_apply_bot.db import (
+    get_query,
     get_query_skipped_results,
     ingest_job,
     next_job,
@@ -69,7 +70,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
             encoding: str | None = None,
             errors: str | None = None,
             capture_output: bool,
-            timeout: int,
+            timeout: int | None,
             check: bool,
         ) -> subprocess.CompletedProcess[str]:
             self.assertTrue(text)
@@ -217,6 +218,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
                     "CODEX_QUERY_WORKER_SCHEMA.json",
                 ],
             )
+            self.assertEqual([call["timeout"] for call in calls], [None, None, None])
             self.assertIn(
                 "https://boards.greenhouse.io/acme/jobs/12345",
                 calls[2]["context"]["current_run_seen_urls"],
@@ -258,6 +260,59 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 [call["context"]["query"]["source_key"] for call in calls],
                 ["greenhouse", "ashby"],
             )
+
+    def test_run_workflow_uses_explicit_worker_timeouts_when_provided(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root)
+            calls: list[dict[str, object]] = []
+            steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "outcome": "candidate",
+                        "candidate": {
+                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "source": "greenhouse",
+                            "title": "Software Engineer",
+                            "company": "Acme",
+                            "location": "Remote, United States",
+                            "posted_at": "2 hours ago",
+                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                        },
+                    },
+                },
+                {
+                    "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "application_status": "submitted",
+                        "confirmation_text": "Application received",
+                        "confirmation_url": "https://boards.greenhouse.io/acme/jobs/12345/thanks",
+                        "error_message": None,
+                        "findings": [],
+                    },
+                },
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {"outcome": "exhausted"},
+                },
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                summary = run_workflow(
+                    db_path,
+                    repo_root=root,
+                    query_timeout_seconds=17,
+                    job_timeout_seconds=29,
+                )
+
+            self.assertEqual(summary["jobs_applied"], 1)
+            self.assertEqual([call["timeout"] for call in calls], [17, 29, 17])
 
     def test_run_workflow_drains_backlog_before_claiming_query(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -440,6 +495,9 @@ class SupervisorWorkflowTests(unittest.TestCase):
                     run_id=run_id,
                     source_key=str(query["source_key"]),
                 )
+                checkpointed = get_query(
+                    db_path, run_id=run_id, source_key=str(query["source_key"])
+                )
                 second = discover_next_candidate_with_codex(
                     db_path,
                     repo_root=root,
@@ -448,6 +506,10 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 )
 
             self.assertEqual(first["outcome"], "skip_result")
+            self.assertIsNotNone(checkpointed)
+            self.assertEqual(checkpointed["status"], "in_progress")
+            self.assertEqual(checkpointed["results_seen"], 1)
+            self.assertEqual(checkpointed["jobs_ingested"], 0)
             self.assertEqual(second["outcome"], "exhausted")
             skipped_rows = get_query_skipped_results(
                 db_path, run_id=run_id, source_key=str(query["source_key"])
@@ -456,6 +518,58 @@ class SupervisorWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 calls[1]["context"]["query_skipped_results"][0]["url"], skipped_url
             )
+
+    def test_candidate_ingestion_checkpoints_query_progress_before_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, enabled_search_sites="greenhouse")
+            prepared = prepare_run(db_path, root)
+            run_id = int(prepared["run_id"])
+            source_key = str(prepared["queries"][0]["source_key"])
+
+            calls: list[dict[str, object]] = []
+            steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "outcome": "candidate",
+                        "candidate": {
+                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "source": "greenhouse",
+                            "title": "Software Engineer",
+                            "company": "Acme",
+                            "location": "Remote, United States",
+                            "posted_at": "2 hours ago",
+                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                        },
+                    },
+                }
+            ]
+
+            def _assert_checkpointed(*args: object, **kwargs: object) -> None:
+                checkpointed = get_query(db_path, run_id=run_id, source_key=source_key)
+                self.assertIsNotNone(checkpointed)
+                self.assertEqual(checkpointed["status"], "in_progress")
+                self.assertEqual(checkpointed["results_seen"], 1)
+                self.assertEqual(checkpointed["jobs_ingested"], 1)
+                raise RuntimeError("stop after checkpoint")
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ), patch(
+                "job_apply_bot.supervisor.apply_job_with_codex",
+                side_effect=_assert_checkpointed,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "stop after checkpoint"):
+                    run_workflow(db_path, repo_root=root, run_id=run_id)
+
+            checkpointed = get_query(db_path, run_id=run_id, source_key=source_key)
+            self.assertIsNotNone(checkpointed)
+            self.assertEqual(checkpointed["results_seen"], 1)
+            self.assertEqual(checkpointed["jobs_ingested"], 1)
 
     def test_apply_job_with_codex_records_findings_for_unsuccessful_results(self) -> None:
         unsuccessful_statuses = ("blocked", "incomplete", "failed")
@@ -648,6 +762,149 @@ class SupervisorWorkflowTests(unittest.TestCase):
 
             self.assertEqual(summary["jobs_applied"], 1)
             self.assertEqual(summary["search_summary"]["completed_queries"], 1)
+
+    def test_run_workflow_resumes_checkpointed_query_progress_after_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, enabled_search_sites="greenhouse, ashby")
+            prepared = prepare_run(db_path, root)
+            run_id = int(prepared["run_id"])
+
+            first_calls: list[dict[str, object]] = []
+            first_steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "outcome": "candidate",
+                        "candidate": {
+                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "source": "greenhouse",
+                            "title": "Software Engineer",
+                            "company": "Acme",
+                            "location": "Remote, United States",
+                            "posted_at": "2 hours ago",
+                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                        },
+                    },
+                },
+                {
+                    "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "application_status": "submitted",
+                        "confirmation_text": "Application received",
+                        "confirmation_url": "https://boards.greenhouse.io/acme/jobs/12345/thanks",
+                        "error_message": None,
+                        "findings": [],
+                    },
+                },
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "outcome": "skip_result",
+                        "result_url": "https://boards.greenhouse.io/acme/jobs/search",
+                        "skip_reason": "Listing page requires authentication before child jobs are visible.",
+                    },
+                },
+                RuntimeError("worker crashed mid-query"),
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(first_steps, first_calls),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "worker crashed mid-query"):
+                    run_workflow(db_path, repo_root=root, run_id=run_id)
+
+            greenhouse_after_crash = get_query(db_path, run_id=run_id, source_key="greenhouse")
+            ashby_after_crash = get_query(db_path, run_id=run_id, source_key="ashby")
+            self.assertIsNotNone(greenhouse_after_crash)
+            self.assertIsNotNone(ashby_after_crash)
+            self.assertEqual(greenhouse_after_crash["status"], "in_progress")
+            self.assertEqual(greenhouse_after_crash["results_seen"], 2)
+            self.assertEqual(greenhouse_after_crash["jobs_ingested"], 1)
+            self.assertEqual(ashby_after_crash["status"], "pending")
+
+            resumed_calls: list[dict[str, object]] = []
+            resumed_steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "outcome": "candidate",
+                        "candidate": {
+                            "raw_url": "https://boards.greenhouse.io/acme/jobs/67890",
+                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/67890",
+                            "source": "greenhouse",
+                            "title": "Backend Engineer",
+                            "company": "Acme",
+                            "location": "Remote, United States",
+                            "posted_at": "1 hour ago",
+                            "page_url": "https://boards.greenhouse.io/acme/jobs/67890",
+                        },
+                    },
+                },
+                {
+                    "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "application_status": "submitted",
+                        "confirmation_text": "Application received",
+                        "confirmation_url": "https://boards.greenhouse.io/acme/jobs/67890/thanks",
+                        "error_message": None,
+                        "findings": [],
+                    },
+                },
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {"outcome": "exhausted"},
+                },
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": {"outcome": "exhausted"},
+                },
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(resumed_steps, resumed_calls),
+            ):
+                summary = run_workflow(db_path, repo_root=root, run_id=run_id)
+
+            greenhouse_final = get_query(db_path, run_id=run_id, source_key="greenhouse")
+            ashby_final = get_query(db_path, run_id=run_id, source_key="ashby")
+            self.assertIsNotNone(greenhouse_final)
+            self.assertIsNotNone(ashby_final)
+            self.assertEqual(greenhouse_final["status"], "completed")
+            self.assertEqual(greenhouse_final["results_seen"], 3)
+            self.assertEqual(greenhouse_final["jobs_ingested"], 2)
+            self.assertEqual(ashby_final["status"], "completed")
+            query_source_keys = [
+                call["context"]["query"]["source_key"]
+                for call in resumed_calls
+                if call["schema"] == "CODEX_QUERY_WORKER_SCHEMA.json"
+            ]
+            self.assertEqual(query_source_keys, ["greenhouse", "greenhouse", "ashby"])
+            self.assertEqual(summary["search_summary"]["completed_queries"], 2)
+
+    def test_query_worker_prompt_contract_mentions_manual_camoufox_wait(self) -> None:
+        prompt_path = Path(__file__).resolve().parents[1] / "PROMPTS" / "CODEX_QUERY_WORKER_PROMPT.md"
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+
+        self.assertIn("visible Camoufox window", prompt_text)
+        self.assertIn("ASCII status text", prompt_text)
+        self.assertIn("no overall timeout", prompt_text)
+        self.assertIn("continue the same discovery step", prompt_text)
+        self.assertIn("Use `query_failed` only", prompt_text)
+
+    def test_apply_worker_prompt_contract_mentions_manual_camoufox_wait(self) -> None:
+        prompt_path = Path(__file__).resolve().parents[1] / "PROMPTS" / "CODEX_APPLY_WORKER_PROMPT.md"
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+
+        self.assertIn("visible Camoufox window", prompt_text)
+        self.assertIn("ASCII status text", prompt_text)
+        self.assertIn("no overall timeout", prompt_text)
+        self.assertIn("continue the current application in that same Camoufox session", prompt_text)
+        self.assertIn("Do not use `blocked` only because a CAPTCHA appeared", prompt_text)
 
     def test_apply_worker_schema_requires_all_finding_fields(self) -> None:
         schema_path = (

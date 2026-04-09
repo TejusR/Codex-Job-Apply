@@ -5,6 +5,9 @@ Requirements:
 - Use browser tooling for Google search and page inspection.
 - Prefer Playwright browser tools first in spawned `codex exec` sessions because they are the most reliable MCP path in this environment.
 - Use Camoufox only as a fallback when Playwright cannot complete the required search or page inspection step.
+- If Playwright encounters a CAPTCHA, anti-bot interstitial, or similar challenge on the Google search flow, treat it as a pause-and-recover condition instead of failing the query immediately.
+- On that challenge, open or reuse a visible Camoufox window for the same search step, emit only ASCII status text while waiting, and poll in bounded increments with no overall timeout until the challenge is cleared.
+- After the challenge clears, continue the same discovery step in that same Camoufox session and return the normal one-step result.
 - Force Google's Past 24 hours filter and newest-first ordering when available.
 - Process results in the order shown.
 - Skip any URL already present in `current_run_seen_urls`.
@@ -17,7 +20,7 @@ Return exactly one JSON object matching the provided schema:
 - `candidate`: you found one next concrete candidate job to hand back to the supervisor
 - `skip_result`: the next relevant result cannot be processed and should be persisted in the skip table
 - `exhausted`: no unseen relevant candidates remain for this query
-- `query_failed`: the query cannot continue because of a query-level blocker such as rate limits, search failures, or browser/tool breakage
+- `query_failed`: the query cannot continue because of a query-level blocker such as rate limits, search failures, or unrecoverable browser/tool breakage
 
 Always include every top-level schema field. Set unused fields to `null`.
 
@@ -37,5 +40,6 @@ For `skip_result`, populate:
 
 For `query_failed`, populate:
 - `error_message`
+- Use `query_failed` only when recovery is not possible after switching, such as Camoufox MCP failure, the browser/session being closed, or the page remaining unparsable after the challenge is clearly gone.
 
 Return JSON only.

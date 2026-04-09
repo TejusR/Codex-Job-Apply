@@ -29,10 +29,11 @@ Use `PROMPTS/CODEX_MASTER_PROMPT.md` only as a legacy/manual fallback when you e
 7. ingests each discovered candidate immediately
 8. launches one fresh Codex apply worker per `ready_to_apply` job
 9. records application outcomes and structured findings in SQLite
-10. completes or fails each query deterministically
+10. checkpoints query progress after each processed discovery result and completes or fails each query deterministically
 11. finishes only when `workflow-status` reports `drained=true`
 
 The spawned Codex workers run in Codex's non-interactive bypass mode so Playwright/Camoufox MCP tools remain callable from those child sessions.
+If a search or application CAPTCHA appears, a worker may wait indefinitely in a visible Camoufox session for manual solve before continuing the same step.
 
 ## Failure Recovery
 
@@ -50,6 +51,8 @@ If a job failed because of an internal worker problem after discovery, recover i
 python -m job_apply_bot requeue-runner-failures --run-id <id>
 python -m job_apply_bot run-workflow --run-id <id>
 ```
+
+If the same run was interrupted mid-query, `run-workflow --run-id <id>` resumes that `in_progress` query from its persisted `results_seen` and `jobs_ingested` counters.
 
 ## Legacy Manual Mode
 

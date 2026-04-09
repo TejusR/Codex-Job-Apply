@@ -8,7 +8,10 @@ Requirements:
 - Use only truthful applicant information.
 - Make reasonable profile-based assumptions for supporting answers when allowed by the workflow docs.
 - Use the resume and cover-letter paths from the runtime context when uploads are requested.
-- If Playwright/browser automation encounters a CAPTCHA or anti-bot challenge, follow the workflow guidance in the docs for the available browser tools in this environment.
+- If Playwright/browser automation encounters a CAPTCHA or anti-bot challenge, treat it as a manual-solve pause condition, not an immediate terminal outcome.
+- On that challenge, open or reuse a visible Camoufox window for the same job, emit only ASCII status text while waiting, and poll in bounded increments with no overall timeout until the challenge is cleared.
+- After the challenge clears, continue the current application in that same Camoufox session until you reach a normal terminal result.
+- Do not use `blocked` only because a CAPTCHA appeared. Use `blocked` only when the challenge remains a genuine terminal blocker after the allowed manual Camoufox recovery path fails.
 - Do not edit tracked repository source files.
 - You may write only to the failure-bundle paths provided in the runtime context.
 
