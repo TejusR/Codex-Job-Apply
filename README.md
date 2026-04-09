@@ -130,6 +130,7 @@ By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
 `finish-run` now refuses unresolved work unless `--force` is supplied.
 `validate-profile` still emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites.
 `run-workflow` is the primary entrypoint. It owns the outer loop in Python and launches short-lived `codex exec` workers for one discovery step or one job application attempt at a time.
+Those workers run in Codex's non-interactive bypass mode so browser MCP tools remain usable from spawned sessions.
 
 ## Future Codex Run
 

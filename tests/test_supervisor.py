@@ -74,6 +74,8 @@ class SupervisorWorkflowTests(unittest.TestCase):
             self.assertTrue(capture_output)
             self.assertFalse(check)
             self.assertTrue(steps, "Unexpected extra Codex invocation")
+            self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
+            self.assertNotIn("--full-auto", command)
 
             output_path = Path(command[command.index("-o") + 1])
             schema_name = Path(command[command.index("--output-schema") + 1]).name
@@ -101,6 +103,12 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 self.assertEqual(schema_name, expected_schema)
 
             if step.get("timeout"):
+                if "write_json" in step:
+                    output_path.write_text(
+                        json.dumps(step["write_json"]), encoding="utf-8"
+                    )
+                elif "write_text" in step:
+                    output_path.write_text(str(step["write_text"]), encoding="utf-8")
                 raise subprocess.TimeoutExpired(
                     command,
                     timeout,
@@ -485,6 +493,57 @@ class SupervisorWorkflowTests(unittest.TestCase):
                     self.assertEqual(result["application"]["status"], status)
                     self.assertEqual(len(result["findings"]), 1)
                     self.assertEqual(result["findings"][0]["category"], f"{status}_category")
+
+    def test_discovery_timeout_with_valid_output_file_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root)
+            prepared = prepare_run(db_path, root)
+            run_id = int(prepared["run_id"])
+            query = next_query(db_path, run_id=run_id)
+            self.assertIsNotNone(query)
+
+            calls: list[dict[str, object]] = []
+            steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "timeout": True,
+                    "write_json": {
+                        "outcome": "candidate",
+                        "candidate": {
+                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                            "source": "greenhouse",
+                            "title": "Software Engineer",
+                            "company": "Acme",
+                            "location": "Remote, United States",
+                            "posted_at": "2 hours ago",
+                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
+                        },
+                        "result_url": None,
+                        "skip_reason": None,
+                        "error_message": None,
+                    },
+                }
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                result = discover_next_candidate_with_codex(
+                    db_path,
+                    repo_root=root,
+                    run_id=run_id,
+                    source_key=str(query["source_key"]),
+                )
+
+            self.assertEqual(result["outcome"], "candidate")
+            self.assertEqual(
+                self._read_attempt_statuses(db_path),
+                [("succeeded", None)],
+            )
 
 
 if __name__ == "__main__":

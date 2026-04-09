@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import os
 import re
+import shutil
 import subprocess
 
 from .db import (
@@ -34,7 +36,18 @@ APPLY_WORKER_PROMPT_PATH = PROMPTS_DIR / "CODEX_APPLY_WORKER_PROMPT.md"
 QUERY_WORKER_SCHEMA_PATH = PROMPTS_DIR / "CODEX_QUERY_WORKER_SCHEMA.json"
 APPLY_WORKER_SCHEMA_PATH = PROMPTS_DIR / "CODEX_APPLY_WORKER_SCHEMA.json"
 
-DEFAULT_CODEX_BIN = "codex"
+def _default_codex_bin() -> str:
+    if os.name == "nt":
+        for candidate in ("codex.cmd", "codex"):
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+        return "codex.cmd"
+    resolved = shutil.which("codex")
+    return resolved or "codex"
+
+
+DEFAULT_CODEX_BIN = _default_codex_bin()
 DEFAULT_QUERY_TIMEOUT_SECONDS = 300
 DEFAULT_JOB_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_WORKER_RETRIES = 1
@@ -426,11 +439,18 @@ def _invoke_codex_worker(
     artifact_dir = _artifact_dir(config.db_path, run_id, worker_type)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     safe_target_key = _safe_filename(target_key)
+    artifact_sequence = _next_artifact_sequence(artifact_dir, safe_target_key)
     last_error = f"Codex {worker_type} worker did not complete."
 
     for attempt_number in range(1, config.max_worker_retries + 2):
-        result_path = artifact_dir / f"{safe_target_key}.attempt-{attempt_number}.result.json"
-        log_path = artifact_dir / f"{safe_target_key}.attempt-{attempt_number}.log.txt"
+        result_path = (
+            artifact_dir
+            / f"{safe_target_key}.invocation-{artifact_sequence}.attempt-{attempt_number}.result.json"
+        )
+        log_path = (
+            artifact_dir
+            / f"{safe_target_key}.invocation-{artifact_sequence}.attempt-{attempt_number}.log.txt"
+        )
         if result_path.exists():
             result_path.unlink()
 
@@ -447,7 +467,7 @@ def _invoke_codex_worker(
             config.codex_bin,
             "exec",
             "--ephemeral",
-            "--full-auto",
+            "--dangerously-bypass-approvals-and-sandbox",
             "--color",
             "never",
             "-C",
@@ -481,6 +501,19 @@ def _invoke_codex_worker(
                 exit_code=None,
                 error_message=last_error,
             )
+            recovered_payload = _load_valid_worker_payload(
+                result_path,
+                validator=validator,
+            )
+            if recovered_payload is not None:
+                finish_worker_attempt(
+                    config.db_path,
+                    attempt_id=int(attempt["id"]),
+                    status="succeeded",
+                    exit_code=None,
+                    error_message=None,
+                )
+                return recovered_payload
             finish_worker_attempt(
                 config.db_path,
                 attempt_id=int(attempt["id"]),
@@ -526,9 +559,10 @@ def _invoke_codex_worker(
             continue
 
         try:
-            payload = json.loads(result_path.read_text(encoding="utf-8"))
-            validator(payload)
-        except (json.JSONDecodeError, OSError, ValueError) as exc:
+            payload = _load_valid_worker_payload(result_path, validator=validator)
+            if payload is None:
+                raise ValueError("Output file was missing after existence check.")
+        except ValueError as exc:
             last_error = f"Codex {worker_type} worker returned invalid output: {exc}"
             finish_worker_attempt(
                 config.db_path,
@@ -753,6 +787,35 @@ def _load_text(path: Path) -> str:
 def _safe_filename(value: str) -> str:
     normalized = _SAFE_FILENAME_PATTERN.sub("-", value).strip("-")
     return normalized or "worker"
+
+
+def _next_artifact_sequence(artifact_dir: Path, safe_target_key: str) -> int:
+    pattern = re.compile(
+        rf"^{re.escape(safe_target_key)}\.invocation-(\d+)\.attempt-\d+\.(?:result\.json|log\.txt)$"
+    )
+    highest = 0
+    for path in artifact_dir.iterdir():
+        match = pattern.match(path.name)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest + 1
+
+
+def _load_valid_worker_payload(
+    result_path: Path,
+    *,
+    validator,
+) -> dict[str, object] | None:
+    if not result_path.exists():
+        return None
+
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"could not parse output file {result_path}: {exc}") from exc
+
+    validator(payload)
+    return payload
 
 
 def _require_non_empty_string(payload: dict[str, object], field_name: str) -> None:

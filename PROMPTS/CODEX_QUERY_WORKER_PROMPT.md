@@ -3,6 +3,8 @@ Read the workflow documents and perform exactly one discovery step for one claim
 Requirements:
 - Use the repository files named in the runtime context as source of truth.
 - Use browser tooling for Google search and page inspection.
+- Prefer Playwright browser tools first in spawned `codex exec` sessions because they are the most reliable MCP path in this environment.
+- Use Camoufox only as a fallback when Playwright cannot complete the required search or page inspection step.
 - Force Google's Past 24 hours filter and newest-first ordering when available.
 - Process results in the order shown.
 - Skip any URL already present in `current_run_seen_urls`.
@@ -16,6 +18,8 @@ Return exactly one JSON object matching the provided schema:
 - `skip_result`: the next relevant result cannot be processed and should be persisted in the skip table
 - `exhausted`: no unseen relevant candidates remain for this query
 - `query_failed`: the query cannot continue because of a query-level blocker such as rate limits, search failures, or browser/tool breakage
+
+Always include every top-level schema field. Set unused fields to `null`.
 
 For `candidate`, populate:
 - `raw_url`

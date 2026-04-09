@@ -1,128 +1,103 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Codex Query Worker Result",
-  "oneOf": [
-    {
-      "type": "object",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "skip_result",
+        "exhausted",
+        "query_failed"
+      ]
+    },
+    "candidate": {
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
       "properties": {
-        "outcome": {
-          "const": "candidate"
+        "raw_url": {
+          "type": "string",
+          "minLength": 1
         },
-        "candidate": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "raw_url": {
-              "type": "string",
-              "minLength": 1
-            },
-            "canonical_url": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "source": {
-              "type": "string",
-              "minLength": 1
-            },
-            "title": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "company": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "location": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "posted_at": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "page_url": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "required": [
-            "raw_url",
-            "canonical_url",
-            "source",
-            "title",
-            "company",
-            "location",
-            "posted_at",
-            "page_url"
+        "canonical_url": {
+          "type": [
+            "string",
+            "null"
           ]
-        }
-      },
-      "required": [
-        "outcome",
-        "candidate"
-      ]
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "outcome": {
-          "const": "skip_result"
         },
-        "result_url": {
+        "source": {
           "type": "string",
           "minLength": 1
         },
-        "skip_reason": {
-          "type": "string",
-          "minLength": 1
-        }
-      },
-      "required": [
-        "outcome",
-        "result_url",
-        "skip_reason"
-      ]
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "outcome": {
-          "const": "exhausted"
-        }
-      },
-      "required": [
-        "outcome"
-      ]
-    },
-    {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "outcome": {
-          "const": "query_failed"
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "error_message": {
+        "company": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "posted_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page_url": {
           "type": "string",
           "minLength": 1
         }
       },
       "required": [
-        "outcome",
-        "error_message"
+        "raw_url",
+        "canonical_url",
+        "source",
+        "title",
+        "company",
+        "location",
+        "posted_at",
+        "page_url"
+      ]
+    },
+    "result_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "skip_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error_message": {
+      "type": [
+        "string",
+        "null"
       ]
     }
+  },
+  "required": [
+    "outcome",
+    "candidate",
+    "result_url",
+    "skip_reason",
+    "error_message"
   ]
 }

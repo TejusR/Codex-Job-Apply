@@ -3,6 +3,8 @@ Read the workflow documents and attempt exactly one job application for the sing
 Requirements:
 - Use the repository files named in the runtime context as source of truth.
 - Use browser tooling to open the job page and complete the application flow.
+- Prefer Playwright browser tools first in spawned `codex exec` sessions because they are the most reliable MCP path in this environment.
+- Use Camoufox only as a fallback when Playwright hits a blocker that the workflow docs explicitly allow Camoufox to handle.
 - Use only truthful applicant information.
 - Make reasonable profile-based assumptions for supporting answers when allowed by the workflow docs.
 - Use the resume and cover-letter paths from the runtime context when uploads are requested.

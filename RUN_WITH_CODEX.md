@@ -32,6 +32,8 @@ Use `PROMPTS/CODEX_MASTER_PROMPT.md` only as a legacy/manual fallback when you e
 10. completes or fails each query deterministically
 11. finishes only when `workflow-status` reports `drained=true`
 
+The spawned Codex workers run in Codex's non-interactive bypass mode so Playwright/Camoufox MCP tools remain callable from those child sessions.
+
 ## Legacy Manual Mode
 
 If you still want a single long Codex conversation, open Codex in the repo root and reference `PROMPTS/CODEX_MASTER_PROMPT.md`.
