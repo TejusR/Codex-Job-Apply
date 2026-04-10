@@ -16,3 +16,7 @@ google-search-snapshot.yml
 __pycache__/
 *.pyc
 *.pyo
+
+# Frontend build output
+frontend/node_modules/
+frontend/dist/

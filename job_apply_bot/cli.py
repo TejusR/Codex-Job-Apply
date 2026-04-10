@@ -31,6 +31,8 @@ from .supervisor import (
 )
 
 DEFAULT_DB_PATH = Path("data/job_apply_bot.sqlite3")
+DEFAULT_DASHBOARD_HOST = "127.0.0.1"
+DEFAULT_DASHBOARD_PORT = 8000
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,6 +152,14 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--confirmation-url")
     record_parser.add_argument("--error-message")
     record_parser.add_argument("--run-id", type=int)
+    record_parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Repository root containing .env and applicant.md",
+    )
+    record_parser.add_argument("--resume-path-used")
+    record_parser.add_argument("--resume-label-used")
 
     finding_parser = subparsers.add_parser(
         "record-finding", help="Persist a structured workflow finding."
@@ -282,6 +292,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     requeue_failures_parser.add_argument("--run-id", type=int, required=True)
 
+    dashboard_parser = subparsers.add_parser(
+        "serve-dashboard",
+        help="Serve the FastAPI workflow dashboard and static frontend assets.",
+    )
+    dashboard_parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Repository root containing the workflow and frontend directories.",
+    )
+    dashboard_parser.add_argument(
+        "--host",
+        default=DEFAULT_DASHBOARD_HOST,
+        help=f"Host interface to bind. Defaults to {DEFAULT_DASHBOARD_HOST}.",
+    )
+    dashboard_parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_DASHBOARD_PORT,
+        help=f"Port to bind. Defaults to {DEFAULT_DASHBOARD_PORT}.",
+    )
+    dashboard_parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload while developing the dashboard.",
+    )
+
     return parser
 
 
@@ -369,6 +406,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "record-application":
+        resume_path_used, resume_label_used = _resolve_resume_snapshot(
+            repo_root=args.repo_root.resolve(),
+            explicit_path=args.resume_path_used,
+            explicit_label=args.resume_label_used,
+        )
         result = record_application(
             args.db_path.resolve(),
             job_key=args.job_key,
@@ -377,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
             confirmation_url=args.confirmation_url,
             error_message=args.error_message,
             run_id=args.run_id,
+            resume_path_used=resume_path_used,
+            resume_label_used=resume_label_used,
         )
         _print_json(result)
         return 0
@@ -445,9 +489,39 @@ def main(argv: list[str] | None = None) -> int:
         _print_json(result)
         return 0
 
+    if args.command == "serve-dashboard":
+        from .dashboard_server import serve_dashboard
+
+        return serve_dashboard(
+            repo_root=args.repo_root.resolve(),
+            db_path=args.db_path.resolve(),
+            host=args.host,
+            port=args.port,
+            reload=args.reload,
+        )
+
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
 
 def _print_json(payload: object) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _resolve_resume_snapshot(
+    *,
+    repo_root: Path,
+    explicit_path: str | None,
+    explicit_label: str | None,
+) -> tuple[str | None, str | None]:
+    resume_path = (explicit_path or "").strip() or None
+    resume_label = (explicit_label or "").strip() or None
+    if resume_path is None:
+        profile = validate_profile(repo_root).to_dict().get("profile", {})
+        if isinstance(profile, dict):
+            profile_resume = profile.get("resume_path")
+            if isinstance(profile_resume, str) and profile_resume.strip():
+                resume_path = profile_resume.strip()
+    if resume_label is None and resume_path is not None:
+        resume_label = Path(resume_path).name
+    return resume_path, resume_label

@@ -61,11 +61,15 @@ SCHEMA_STATEMENTS = (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       job_key TEXT NOT NULL,
       applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+      run_id INTEGER,
       status TEXT NOT NULL,
       confirmation_text TEXT,
       confirmation_url TEXT,
+      resume_path_used TEXT,
+      resume_label_used TEXT,
       error_message TEXT,
-      FOREIGN KEY (job_key) REFERENCES jobs(job_key)
+      FOREIGN KEY (job_key) REFERENCES jobs(job_key),
+      FOREIGN KEY (run_id) REFERENCES runs(id)
     );
     """,
     """
@@ -248,6 +252,9 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     with connection:
         for statement in SCHEMA_STATEMENTS:
             connection.execute(statement)
+        _ensure_column(connection, "applications", "run_id", "INTEGER")
+        _ensure_column(connection, "applications", "resume_path_used", "TEXT")
+        _ensure_column(connection, "applications", "resume_label_used", "TEXT")
         _ensure_column(connection, "run_search_queries", "cursor_json", "TEXT")
 
 
@@ -977,6 +984,41 @@ def workflow_status(db_path: Path, *, run_id: int) -> dict[str, object]:
     return status
 
 
+def list_runs(db_path: Path) -> list[dict[str, object]]:
+    with managed_connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM runs
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+    payload: list[dict[str, object]] = []
+    for row in rows:
+        item = dict(row)
+        item["notes"] = _load_notes(item.get("notes"))
+        payload.append(item)
+    return payload
+
+
+def get_run(db_path: Path, *, run_id: int) -> dict[str, object] | None:
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    payload = dict(row)
+    payload["notes"] = _load_notes(payload.get("notes"))
+    return payload
+
+
 def get_job(db_path: Path, *, job_key: str) -> dict[str, object] | None:
     with managed_connection(db_path) as connection:
         row = connection.execute(
@@ -1388,6 +1430,24 @@ def update_worker_session(
     return dict(row) if row is not None else {"run_id": run_id, "worker_type": worker_type, "slot_key": slot_key}
 
 
+def list_worker_sessions(db_path: Path, *, run_id: int) -> list[dict[str, object]]:
+    with managed_connection(db_path) as connection:
+        run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Run {run_id} does not exist.")
+
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM codex_worker_sessions
+            WHERE run_id = ?
+            ORDER BY worker_type ASC, slot_key ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def reset_worker_sessions(db_path: Path, *, run_id: int) -> int:
     with managed_connection(db_path) as connection:
         cursor = connection.execute(
@@ -1493,6 +1553,8 @@ def record_application(
     confirmation_url: str | None,
     error_message: str | None,
     run_id: int | None,
+    resume_path_used: str | None = None,
+    resume_label_used: str | None = None,
 ) -> dict[str, object]:
     if status not in {
         "submitted",
@@ -1514,16 +1576,20 @@ def record_application(
         connection.execute(
             """
             INSERT INTO applications (
-                job_key, applied_at, status, confirmation_text, confirmation_url, error_message
+                job_key, applied_at, run_id, status, confirmation_text, confirmation_url,
+                resume_path_used, resume_label_used, error_message
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_key,
                 applied_at,
+                run_id,
                 status,
                 confirmation_text,
                 confirmation_url,
+                _normalize_optional_string(resume_path_used),
+                _normalize_optional_string(resume_label_used),
                 error_message,
             ),
         )

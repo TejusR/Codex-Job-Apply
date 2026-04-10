@@ -693,6 +693,7 @@ def _apply_existing_job(
     validation: ProfileValidationResult,
 ) -> dict[str, object]:
     job_key = str(job["job_key"])
+    resume_path_used, resume_label_used = _resume_snapshot_from_validation(validation)
     runtime_context = _build_apply_worker_context(
         config.repo_root,
         validation,
@@ -723,6 +724,8 @@ def _apply_existing_job(
             confirmation_url=str(job.get("canonical_url") or job.get("raw_url") or ""),
             error_message=error_message,
             run_id=run_id,
+            resume_path_used=resume_path_used,
+            resume_label_used=resume_label_used,
         )
         failure_manifest_path = _write_failure_manifest(
             exc.failure_bundle_dir,
@@ -769,6 +772,8 @@ def _apply_existing_job(
         confirmation_url=_as_nullable_string(payload.get("confirmation_url")),
         error_message=_as_nullable_string(payload.get("error_message")),
         run_id=run_id,
+        resume_path_used=resume_path_used,
+        resume_label_used=resume_label_used,
     )
 
     findings: list[dict[str, object]] = []
@@ -818,6 +823,18 @@ def _validated_profile(repo_root: Path) -> ProfileValidationResult:
     raise ValueError(
         "Profile validation failed. Missing required items: " + ", ".join(missing_items)
     )
+
+
+def _resume_snapshot_from_validation(
+    validation: ProfileValidationResult,
+) -> tuple[str | None, str | None]:
+    profile = validation.to_dict().get("profile", {})
+    if not isinstance(profile, dict):
+        return None, None
+
+    resume_path = _normalize_optional_string(profile.get("resume_path"))
+    resume_label = Path(resume_path).name if resume_path else None
+    return resume_path, resume_label
 
 
 def _resolve_discovery_workers(
