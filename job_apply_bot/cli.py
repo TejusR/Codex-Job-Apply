@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     discover_parser = subparsers.add_parser(
         "discover-next-candidate-with-codex",
-        help="Run one Codex-backed discovery step for a claimed query.",
+        help="Run one Codex-backed discovery page harvest for a claimed query.",
     )
     discover_parser.add_argument("--run-id", type=int, required=True)
     discover_parser.add_argument("--source-key", required=True)
@@ -231,7 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_workflow_parser = subparsers.add_parser(
         "run-workflow",
-        help="Supervise the full workflow with short-lived Codex workers.",
+        help="Supervise the full workflow with parallel discovery/apply worker pools.",
     )
     run_workflow_parser.add_argument(
         "--repo-root",
@@ -263,6 +263,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_WORKER_RETRIES,
         help="How many times to retry an invalid or failed worker after the first attempt.",
+    )
+    run_workflow_parser.add_argument(
+        "--discovery-workers",
+        default="auto",
+        help="Discovery worker concurrency. Use 'auto' for one slot per enabled board/query.",
+    )
+    run_workflow_parser.add_argument(
+        "--apply-workers",
+        type=int,
+        default=5,
+        help="Apply/resolution worker concurrency. Defaults to 5.",
     )
 
     requeue_failures_parser = subparsers.add_parser(
@@ -423,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
             query_timeout_seconds=args.query_timeout_seconds,
             job_timeout_seconds=args.job_timeout_seconds,
             max_worker_retries=args.max_worker_retries,
+            discovery_workers=args.discovery_workers,
+            apply_workers=args.apply_workers,
         )
         _print_json(result)
         return 0

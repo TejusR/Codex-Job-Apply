@@ -27,6 +27,16 @@ TERMINAL_APPLICATION_STATUSES = (
 )
 FINDING_APPLICATION_STATUSES = ("failed", "incomplete", "blocked")
 TERMINAL_JOB_STATUSES = ("applied", "duplicate_skipped", "blocked", "incomplete", "applying")
+SEARCH_RESULT_TERMINAL_STATUSES = (
+    "expanded",
+    "ingested",
+    "duplicate_skipped",
+    "filtered_out",
+    "applied",
+    "blocked",
+    "incomplete",
+    "failed",
+)
 
 SCHEMA_STATEMENTS = (
     """
@@ -100,9 +110,34 @@ SCHEMA_STATEMENTS = (
       finished_at TEXT,
       results_seen INTEGER NOT NULL DEFAULT 0,
       jobs_ingested INTEGER NOT NULL DEFAULT 0,
+      cursor_json TEXT,
       last_error TEXT,
       FOREIGN KEY (run_id) REFERENCES runs(id),
       UNIQUE(run_id, source_key)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS run_search_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id INTEGER NOT NULL,
+      source_key TEXT NOT NULL,
+      parent_result_id INTEGER,
+      origin_kind TEXT NOT NULL,
+      url TEXT NOT NULL,
+      title TEXT,
+      snippet TEXT,
+      visible_date TEXT,
+      page_number INTEGER,
+      rank INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending',
+      claimed_by TEXT,
+      claimed_at TEXT,
+      finished_at TEXT,
+      reason TEXT,
+      job_key TEXT,
+      FOREIGN KEY (run_id) REFERENCES runs(id),
+      FOREIGN KEY (parent_result_id) REFERENCES run_search_results(id),
+      UNIQUE(run_id, source_key, url)
     );
     """,
     """
@@ -134,14 +169,32 @@ SCHEMA_STATEMENTS = (
       UNIQUE(run_id, source_key, url)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS codex_worker_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id INTEGER NOT NULL,
+      worker_type TEXT NOT NULL,
+      slot_key TEXT NOT NULL,
+      thread_id TEXT,
+      status TEXT NOT NULL DEFAULT 'idle',
+      started_at TEXT NOT NULL,
+      last_used_at TEXT NOT NULL,
+      last_error TEXT,
+      FOREIGN KEY (run_id) REFERENCES runs(id),
+      UNIQUE(run_id, worker_type, slot_key)
+    );
+    """,
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
     "CREATE INDEX IF NOT EXISTS idx_jobs_posted_at ON jobs(posted_at);",
     "CREATE INDEX IF NOT EXISTS idx_applications_job_key ON applications(job_key);",
     "CREATE INDEX IF NOT EXISTS idx_application_findings_run_id ON application_findings(run_id);",
     "CREATE INDEX IF NOT EXISTS idx_application_findings_job_key ON application_findings(job_key);",
     "CREATE INDEX IF NOT EXISTS idx_run_search_queries_run_status ON run_search_queries(run_id, status);",
+    "CREATE INDEX IF NOT EXISTS idx_run_search_results_run_status ON run_search_results(run_id, status);",
+    "CREATE INDEX IF NOT EXISTS idx_run_search_results_run_source ON run_search_results(run_id, source_key);",
     "CREATE INDEX IF NOT EXISTS idx_codex_worker_attempts_run_target ON codex_worker_attempts(run_id, worker_type, target_key);",
     "CREATE INDEX IF NOT EXISTS idx_run_query_skipped_results_run_source ON run_query_skipped_results(run_id, source_key);",
+    "CREATE INDEX IF NOT EXISTS idx_codex_worker_sessions_run_type_status ON codex_worker_sessions(run_id, worker_type, status);",
 )
 
 
@@ -195,6 +248,7 @@ def initialize_database(connection: sqlite3.Connection) -> None:
     with connection:
         for statement in SCHEMA_STATEMENTS:
             connection.execute(statement)
+        _ensure_column(connection, "run_search_queries", "cursor_json", "TEXT")
 
 
 def start_run(db_path: Path) -> dict[str, object]:
@@ -230,7 +284,7 @@ def prepare_run(db_path: Path, repo_root: Path) -> dict[str, object]:
         _seed_run_search_queries(connection, run_id, query_specs)
         query_rows = connection.execute(
             """
-            SELECT id, run_id, source_key, domain, query_text, status
+            SELECT id, run_id, source_key, domain, query_text, status, cursor_json
             FROM run_search_queries
             WHERE run_id = ?
             ORDER BY id ASC
@@ -462,33 +516,72 @@ def ingest_job(
 
 def next_job(db_path: Path, *, mark_applying: bool = False) -> dict[str, object] | None:
     with managed_connection(db_path) as connection:
-        row = connection.execute(
-            """
-            SELECT *
-            FROM jobs
-            WHERE status = 'ready_to_apply'
-            ORDER BY posted_at DESC, discovered_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        if row is None:
-            return None
+        while True:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM jobs
+                WHERE status = 'ready_to_apply'
+                ORDER BY posted_at DESC, discovered_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
 
-        if mark_applying:
-            connection.execute(
+            if not mark_applying:
+                return dict(row)
+
+            cursor = connection.execute(
                 """
                 UPDATE jobs
                 SET status = 'applying',
                     status_reason = NULL,
                     last_updated_at = ?
-                WHERE job_key = ?
+                WHERE job_key = ? AND status = 'ready_to_apply'
                 """,
                 (format_timestamp(utc_now()), row["job_key"]),
             )
+            if cursor.rowcount != 1:
+                continue
             row = connection.execute(
                 "SELECT * FROM jobs WHERE job_key = ?", (row["job_key"],)
             ).fetchone()
-    return dict(row) if row is not None else None
+            return dict(row) if row is not None else None
+
+
+def mark_job_applying(db_path: Path, *, job_key: str) -> dict[str, object] | None:
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM jobs WHERE job_key = ?",
+            (job_key,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Job {job_key} does not exist.")
+        if row["status"] != "ready_to_apply":
+            return dict(row)
+
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET status = 'applying',
+                status_reason = NULL,
+                last_updated_at = ?
+            WHERE job_key = ? AND status = 'ready_to_apply'
+            """,
+            (format_timestamp(utc_now()), job_key),
+        )
+        if cursor.rowcount != 1:
+            updated = connection.execute(
+                "SELECT * FROM jobs WHERE job_key = ?",
+                (job_key,),
+            ).fetchone()
+            return dict(updated) if updated is not None else None
+        updated = connection.execute(
+            "SELECT * FROM jobs WHERE job_key = ?",
+            (job_key,),
+        ).fetchone()
+    return dict(updated) if updated is not None else None
 
 
 def requeue_stale_applying_jobs(db_path: Path, *, run_id: int | None = None) -> int:
@@ -502,6 +595,23 @@ def requeue_stale_applying_jobs(db_path: Path, *, run_id: int | None = None) -> 
             run_notes["requeued_jobs_count"] = prior_value + requeued_jobs_count
             _set_run_notes(connection, run_id, run_notes)
     return requeued_jobs_count
+
+
+def requeue_processing_search_results(db_path: Path, *, run_id: int) -> int:
+    with managed_connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE run_search_results
+            SET status = 'pending',
+                claimed_by = NULL,
+                claimed_at = NULL,
+                finished_at = NULL,
+                reason = COALESCE(reason, 'requeued_from_interrupted_run')
+            WHERE run_id = ? AND status = 'processing'
+            """,
+            (run_id,),
+        )
+    return int(cursor.rowcount)
 
 
 def requeue_runner_failures(db_path: Path, *, run_id: int) -> dict[str, object]:
@@ -596,6 +706,7 @@ def next_query(db_path: Path, *, run_id: int) -> dict[str, object] | None:
             UPDATE run_search_queries
             SET status = 'in_progress',
                 started_at = COALESCE(started_at, ?),
+                finished_at = NULL,
                 last_error = NULL
             WHERE id = ?
             """,
@@ -650,6 +761,7 @@ def claim_query(db_path: Path, *, run_id: int) -> dict[str, object] | None:
             UPDATE run_search_queries
             SET status = 'in_progress',
                 started_at = COALESCE(started_at, ?),
+                finished_at = NULL,
                 last_error = NULL
             WHERE id = ?
             """,
@@ -666,6 +778,32 @@ def claim_query(db_path: Path, *, run_id: int) -> dict[str, object] | None:
     return dict(updated) if updated is not None else None
 
 
+def list_run_queries(db_path: Path, *, run_id: int) -> list[dict[str, object]]:
+    with managed_connection(db_path) as connection:
+        run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Run {run_id} does not exist.")
+
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM run_search_queries
+            WHERE run_id = ?
+            ORDER BY
+                CASE status
+                    WHEN 'in_progress' THEN 0
+                    WHEN 'pending' THEN 1
+                    WHEN 'failed' THEN 2
+                    WHEN 'completed' THEN 3
+                    ELSE 4
+                END,
+                id ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def complete_query(
     db_path: Path,
     *,
@@ -673,6 +811,7 @@ def complete_query(
     source_key: str,
     results_seen: int | None = None,
     jobs_ingested: int | None = None,
+    cursor_json: str | None = None,
 ) -> dict[str, object]:
     return _update_query_status(
         db_path,
@@ -681,6 +820,7 @@ def complete_query(
         status="completed",
         results_seen=results_seen,
         jobs_ingested=jobs_ingested,
+        cursor_json=cursor_json,
         last_error=None,
     )
 
@@ -693,6 +833,7 @@ def fail_query(
     message: str,
     results_seen: int | None = None,
     jobs_ingested: int | None = None,
+    cursor_json: str | None = None,
 ) -> dict[str, object]:
     return _update_query_status(
         db_path,
@@ -701,6 +842,7 @@ def fail_query(
         status="failed",
         results_seen=results_seen,
         jobs_ingested=jobs_ingested,
+        cursor_json=cursor_json,
         last_error=message,
     )
 
@@ -712,6 +854,7 @@ def checkpoint_query_progress(
     source_key: str,
     results_seen: int | None = None,
     jobs_ingested: int | None = None,
+    cursor_json: str | None = None,
 ) -> dict[str, object]:
     with managed_connection(db_path) as connection:
         query_row = connection.execute(
@@ -731,12 +874,20 @@ def checkpoint_query_progress(
             """
             UPDATE run_search_queries
             SET status = 'in_progress',
+                started_at = COALESCE(started_at, ?),
                 finished_at = NULL,
                 results_seen = COALESCE(?, results_seen),
-                jobs_ingested = COALESCE(?, jobs_ingested)
+                jobs_ingested = COALESCE(?, jobs_ingested),
+                cursor_json = COALESCE(?, cursor_json)
             WHERE id = ?
             """,
-            (results_seen, jobs_ingested, query_row["id"]),
+            (
+                format_timestamp(utc_now()),
+                results_seen,
+                jobs_ingested,
+                cursor_json,
+                query_row["id"],
+            ),
         )
         updated = connection.execute(
             """
@@ -744,6 +895,44 @@ def checkpoint_query_progress(
             FROM run_search_queries
             WHERE id = ?
             """,
+            (query_row["id"],),
+        ).fetchone()
+    return dict(updated) if updated is not None else {"run_id": run_id, "source_key": source_key}
+
+
+def increment_query_jobs_ingested(
+    db_path: Path,
+    *,
+    run_id: int,
+    source_key: str,
+    amount: int = 1,
+) -> dict[str, object]:
+    with managed_connection(db_path) as connection:
+        query_row = connection.execute(
+            """
+            SELECT *
+            FROM run_search_queries
+            WHERE run_id = ? AND source_key = ?
+            """,
+            (run_id, source_key),
+        ).fetchone()
+        if query_row is None:
+            raise ValueError(
+                f"Run {run_id} does not have a search query for source '{source_key}'."
+            )
+
+        new_value = int(query_row["jobs_ingested"] or 0) + max(0, int(amount))
+        connection.execute(
+            """
+            UPDATE run_search_queries
+            SET jobs_ingested = ?,
+                started_at = COALESCE(started_at, ?)
+            WHERE id = ?
+            """,
+            (new_value, format_timestamp(utc_now()), query_row["id"]),
+        )
+        updated = connection.execute(
+            "SELECT * FROM run_search_queries WHERE id = ?",
             (query_row["id"],),
         ).fetchone()
     return dict(updated) if updated is not None else {"run_id": run_id, "source_key": source_key}
@@ -757,6 +946,8 @@ def workflow_status(db_path: Path, *, run_id: int) -> dict[str, object]:
 
         open_jobs = _count_open_jobs(connection)
         query_counts = _count_query_statuses(connection, run_id)
+        search_result_counts = _count_search_result_statuses(connection, run_id)
+        worker_counts = _count_worker_session_statuses(connection, run_id)
         status = {
             "run_id": run_id,
             "ready_jobs": open_jobs["ready_jobs"],
@@ -766,12 +957,19 @@ def workflow_status(db_path: Path, *, run_id: int) -> dict[str, object]:
             "queries_failed": query_counts["failed"],
             "queries_completed": query_counts["completed"],
             "queries_total": query_counts["total"],
+            "search_results_pending": search_result_counts["pending"],
+            "search_results_processing": search_result_counts["processing"],
+            "search_results_total": search_result_counts["total"],
+            "discovery_workers_running": worker_counts["discovery_running"],
+            "apply_workers_running": worker_counts["apply_running"],
         }
         drained = (
             status["ready_jobs"] == 0
             and status["applying_jobs"] == 0
             and status["queries_pending"] == 0
             and status["queries_in_progress"] == 0
+            and status["search_results_pending"] == 0
+            and status["search_results_processing"] == 0
         )
         status["drained"] = drained
         status["drained_with_errors"] = drained and status["queries_failed"] > 0
@@ -798,6 +996,205 @@ def get_query(db_path: Path, *, run_id: int, source_key: str) -> dict[str, objec
             (run_id, source_key),
         ).fetchone()
     return dict(row) if row is not None else None
+
+
+def insert_search_results(
+    db_path: Path,
+    *,
+    run_id: int,
+    source_key: str,
+    origin_kind: str,
+    results: list[dict[str, object]],
+    parent_result_id: int | None = None,
+) -> dict[str, object]:
+    inserted_count = 0
+    with managed_connection(db_path) as connection:
+        run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Run {run_id} does not exist.")
+
+        for item in results:
+            url = str(item.get("url") or "").strip()
+            if not url:
+                continue
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO run_search_results (
+                    run_id,
+                    source_key,
+                    parent_result_id,
+                    origin_kind,
+                    url,
+                    title,
+                    snippet,
+                    visible_date,
+                    page_number,
+                    rank,
+                    status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                (
+                    run_id,
+                    source_key,
+                    parent_result_id,
+                    origin_kind,
+                    url,
+                    _normalize_optional_string(item.get("title")),
+                    _normalize_optional_string(item.get("snippet")),
+                    _normalize_optional_string(item.get("visible_date")),
+                    _normalize_optional_int(item.get("page_number")),
+                    _normalize_optional_int(item.get("rank")),
+                ),
+            )
+            inserted_count += int(cursor.rowcount)
+
+        total_count_row = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM run_search_results
+            WHERE run_id = ? AND source_key = ?
+            """,
+            (run_id, source_key),
+        ).fetchone()
+
+    return {
+        "run_id": run_id,
+        "source_key": source_key,
+        "parent_result_id": parent_result_id,
+        "origin_kind": origin_kind,
+        "inserted_count": inserted_count,
+        "total_count": int(total_count_row["count"]) if total_count_row is not None else 0,
+    }
+
+
+def claim_search_result(
+    db_path: Path,
+    *,
+    run_id: int,
+    claimed_by: str,
+) -> dict[str, object] | None:
+    with managed_connection(db_path) as connection:
+        while True:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM run_search_results
+                WHERE run_id = ? AND status = 'pending'
+                ORDER BY
+                    COALESCE(page_number, 2147483647) ASC,
+                    COALESCE(rank, 2147483647) ASC,
+                    id ASC
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            claimed_at = format_timestamp(utc_now())
+            cursor = connection.execute(
+                """
+                UPDATE run_search_results
+                SET status = 'processing',
+                    claimed_by = ?,
+                    claimed_at = ?,
+                    finished_at = NULL
+                WHERE id = ? AND status = 'pending'
+                """,
+                (claimed_by, claimed_at, row["id"]),
+            )
+            if cursor.rowcount != 1:
+                continue
+            updated = connection.execute(
+                "SELECT * FROM run_search_results WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            return dict(updated) if updated is not None else None
+
+
+def update_search_result_status(
+    db_path: Path,
+    *,
+    result_id: int,
+    status: str,
+    reason: str | None = None,
+    job_key: str | None = None,
+) -> dict[str, object]:
+    terminal = status in SEARCH_RESULT_TERMINAL_STATUSES
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM run_search_results WHERE id = ?",
+            (result_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Search result {result_id} does not exist.")
+
+        connection.execute(
+            """
+            UPDATE run_search_results
+            SET status = ?,
+                reason = ?,
+                job_key = COALESCE(?, job_key),
+                finished_at = ?,
+                claimed_by = CASE WHEN ? THEN claimed_by ELSE NULL END,
+                claimed_at = CASE WHEN ? THEN claimed_at ELSE NULL END
+            WHERE id = ?
+            """,
+            (
+                status,
+                reason,
+                job_key,
+                format_timestamp(utc_now()) if terminal else None,
+                1 if status == "processing" else 0,
+                1 if status == "processing" else 0,
+                result_id,
+            ),
+        )
+        updated = connection.execute(
+            "SELECT * FROM run_search_results WHERE id = ?",
+            (result_id,),
+        ).fetchone()
+    return dict(updated) if updated is not None else {"id": result_id}
+
+
+def get_search_result(db_path: Path, *, result_id: int) -> dict[str, object] | None:
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM run_search_results WHERE id = ?",
+            (result_id,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_search_results(
+    db_path: Path,
+    *,
+    run_id: int,
+    source_key: str | None = None,
+) -> list[dict[str, object]]:
+    with managed_connection(db_path) as connection:
+        if source_key is None:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM run_search_results
+                WHERE run_id = ?
+                ORDER BY id ASC
+                """,
+                (run_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM run_search_results
+                WHERE run_id = ? AND source_key = ?
+                ORDER BY id ASC
+                """,
+                (run_id, source_key),
+            ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_run_seen_urls(db_path: Path, *, run_id: int) -> list[str]:
@@ -878,6 +1275,136 @@ def get_query_skipped_results(
             (run_id, source_key),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def ensure_worker_session(
+    db_path: Path,
+    *,
+    run_id: int,
+    worker_type: str,
+    slot_key: str,
+) -> dict[str, object]:
+    now = format_timestamp(utc_now())
+    with managed_connection(db_path) as connection:
+        run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+        if run is None:
+            raise ValueError(f"Run {run_id} does not exist.")
+
+        connection.execute(
+            """
+            INSERT INTO codex_worker_sessions (
+                run_id,
+                worker_type,
+                slot_key,
+                status,
+                started_at,
+                last_used_at
+            )
+            VALUES (?, ?, ?, 'idle', ?, ?)
+            ON CONFLICT(run_id, worker_type, slot_key) DO NOTHING
+            """,
+            (run_id, worker_type, slot_key, now, now),
+        )
+        row = connection.execute(
+            """
+            SELECT *
+            FROM codex_worker_sessions
+            WHERE run_id = ? AND worker_type = ? AND slot_key = ?
+            """,
+            (run_id, worker_type, slot_key),
+        ).fetchone()
+    return dict(row) if row is not None else {"run_id": run_id, "worker_type": worker_type, "slot_key": slot_key}
+
+
+def get_worker_session(
+    db_path: Path,
+    *,
+    run_id: int,
+    worker_type: str,
+    slot_key: str,
+) -> dict[str, object] | None:
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM codex_worker_sessions
+            WHERE run_id = ? AND worker_type = ? AND slot_key = ?
+            """,
+            (run_id, worker_type, slot_key),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def update_worker_session(
+    db_path: Path,
+    *,
+    run_id: int,
+    worker_type: str,
+    slot_key: str,
+    status: str,
+    thread_id: str | None = None,
+    last_error: str | None = None,
+) -> dict[str, object]:
+    now = format_timestamp(utc_now())
+    with managed_connection(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO codex_worker_sessions (
+                run_id,
+                worker_type,
+                slot_key,
+                thread_id,
+                status,
+                started_at,
+                last_used_at,
+                last_error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, worker_type, slot_key) DO UPDATE SET
+                thread_id = COALESCE(excluded.thread_id, codex_worker_sessions.thread_id),
+                status = excluded.status,
+                last_used_at = excluded.last_used_at,
+                last_error = excluded.last_error
+            """,
+            (
+                run_id,
+                worker_type,
+                slot_key,
+                thread_id,
+                status,
+                now,
+                now,
+                last_error,
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT *
+            FROM codex_worker_sessions
+            WHERE run_id = ? AND worker_type = ? AND slot_key = ?
+            """,
+            (run_id, worker_type, slot_key),
+        ).fetchone()
+    return dict(row) if row is not None else {"run_id": run_id, "worker_type": worker_type, "slot_key": slot_key}
+
+
+def reset_worker_sessions(db_path: Path, *, run_id: int) -> int:
+    with managed_connection(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE codex_worker_sessions
+            SET status = 'idle',
+                last_error = CASE
+                    WHEN last_error IS NULL OR last_error = ''
+                    THEN 'recovered_from_interrupted_run'
+                    ELSE last_error
+                END,
+                last_used_at = ?
+            WHERE run_id = ? AND status = 'running'
+            """,
+            (format_timestamp(utc_now()), run_id),
+        )
+    return int(cursor.rowcount)
 
 
 def start_worker_attempt(
@@ -1129,12 +1656,16 @@ def _build_search_summary(
     connection: sqlite3.Connection, run_id: int, run_notes: dict[str, object]
 ) -> dict[str, object]:
     query_counts = _count_query_statuses(connection, run_id)
+    search_result_counts = _count_search_result_statuses(connection, run_id)
     return {
         "total_queries": query_counts["total"],
         "completed_queries": query_counts["completed"],
         "failed_queries": query_counts["failed"],
         "pending_queries": query_counts["pending"],
         "in_progress_queries": query_counts["in_progress"],
+        "pending_search_results": search_result_counts["pending"],
+        "processing_search_results": search_result_counts["processing"],
+        "total_search_results": search_result_counts["total"],
         "requeued_jobs_count": run_notes.get("requeued_jobs_count", 0),
     }
 
@@ -1193,6 +1724,7 @@ def _update_query_status(
     status: str,
     results_seen: int | None,
     jobs_ingested: int | None,
+    cursor_json: str | None,
     last_error: str | None,
 ) -> dict[str, object]:
     finished_at = format_timestamp(utc_now())
@@ -1218,6 +1750,7 @@ def _update_query_status(
                 finished_at = ?,
                 results_seen = COALESCE(?, results_seen),
                 jobs_ingested = COALESCE(?, jobs_ingested),
+                cursor_json = COALESCE(?, cursor_json),
                 last_error = ?
             WHERE id = ?
             """,
@@ -1227,6 +1760,7 @@ def _update_query_status(
                 finished_at,
                 results_seen,
                 jobs_ingested,
+                cursor_json,
                 last_error,
                 query_row["id"],
             ),
@@ -1333,6 +1867,58 @@ def _count_query_statuses(connection: sqlite3.Connection, run_id: int) -> dict[s
     return counts
 
 
+def _count_search_result_statuses(
+    connection: sqlite3.Connection, run_id: int
+) -> dict[str, int]:
+    rows = connection.execute(
+        """
+        SELECT status, COUNT(*) AS count
+        FROM run_search_results
+        WHERE run_id = ?
+        GROUP BY status
+        """,
+        (run_id,),
+    ).fetchall()
+    counts = {
+        "pending": 0,
+        "processing": 0,
+        "total": 0,
+    }
+    for row in rows:
+        status = str(row["status"])
+        count = int(row["count"])
+        if status in counts:
+            counts[status] = count
+        counts["total"] += count
+    return counts
+
+
+def _count_worker_session_statuses(
+    connection: sqlite3.Connection, run_id: int
+) -> dict[str, int]:
+    rows = connection.execute(
+        """
+        SELECT worker_type, COUNT(*) AS count
+        FROM codex_worker_sessions
+        WHERE run_id = ? AND status = 'running'
+        GROUP BY worker_type
+        """,
+        (run_id,),
+    ).fetchall()
+    counts = {
+        "discovery_running": 0,
+        "apply_running": 0,
+    }
+    for row in rows:
+        worker_type = str(row["worker_type"])
+        count = int(row["count"])
+        if worker_type == "discovery":
+            counts["discovery_running"] = count
+        elif worker_type == "apply":
+            counts["apply_running"] = count
+    return counts
+
+
 def _create_run(connection: sqlite3.Connection) -> int:
     started_at = format_timestamp(utc_now())
     notes = json.dumps(
@@ -1364,9 +1950,9 @@ def _seed_run_search_queries(
         connection.execute(
             """
             INSERT INTO run_search_queries (
-                run_id, source_key, domain, query_text, status
+                run_id, source_key, domain, query_text, status, cursor_json
             )
-            VALUES (?, ?, ?, ?, 'pending')
+            VALUES (?, ?, ?, ?, 'pending', NULL)
             """,
             (run_id, source_key, domain, query_text),
         )
@@ -1393,18 +1979,23 @@ def _assert_run_can_finish(connection: sqlite3.Connection, run_id: int) -> None:
 
     open_jobs = _count_open_jobs(connection)
     query_counts = _count_query_statuses(connection, run_id)
+    search_result_counts = _count_search_result_statuses(connection, run_id)
     if (
         open_jobs["ready_jobs"] > 0
         or open_jobs["applying_jobs"] > 0
         or query_counts["pending"] > 0
         or query_counts["in_progress"] > 0
+        or search_result_counts["pending"] > 0
+        or search_result_counts["processing"] > 0
     ):
         raise ValueError(
             "Cannot finish run while work remains: "
             f"ready_jobs={open_jobs['ready_jobs']}, "
             f"applying_jobs={open_jobs['applying_jobs']}, "
             f"queries_pending={query_counts['pending']}, "
-            f"queries_in_progress={query_counts['in_progress']}."
+            f"queries_in_progress={query_counts['in_progress']}, "
+            f"search_results_pending={search_result_counts['pending']}, "
+            f"search_results_processing={search_result_counts['processing']}."
         )
 
 
@@ -1447,3 +2038,33 @@ def _load_notes(raw_notes: str | None) -> dict[str, object]:
     if not isinstance(notes.get("requeued_jobs_count"), int):
         notes["requeued_jobs_count"] = 0
     return notes
+
+
+def _ensure_column(
+    connection: sqlite3.Connection, table_name: str, column_name: str, column_sql: str
+) -> None:
+    existing = {
+        str(row["name"])
+        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name in existing:
+        return
+    connection.execute(
+        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"
+    )
+
+
+def _normalize_optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

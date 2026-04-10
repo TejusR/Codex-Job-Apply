@@ -11,15 +11,13 @@ Before new discovery:
 
 Backlog draining is the only place the workflow should rely on the local SQLite sort order.
 
-## Step 1: Claim Exactly One Query at a Time
+## Step 1: Run Discovery Slots Per Board
 
-After backlog is empty, call `python -m job_apply_bot next-query --run-id <id>`.
+After backlog exists, `run-workflow` should drain it first with the apply pool.
 
-If `next-query` returns `null`, there are no pending queries left for the run.
+Then discovery should run one logical slot per enabled board/query by default. Each query row is run-scoped and should be processed independently. If the same run is resumed with `run-workflow --run-id <id>`, continue any `in_progress` query from its persisted `results_seen`, `jobs_ingested`, and `cursor_json` state. A brand-new `prepare-run` still creates a fresh run and reseeds queries from the start.
 
-Each query row is run-scoped and should be processed independently. If the same run is resumed with `run-workflow --run-id <id>`, continue any `in_progress` query from its persisted `results_seen` and `jobs_ingested` counters. A brand-new `prepare-run` still creates a fresh run and reseeds queries from the start.
-
-## Step 2: Search Exhaustively for the Claimed Query
+## Step 2: Harvest Google Result Pages Into the Queue
 
 Each Google query should be generated from:
 - the exact phrases in `APPLICANT_TARGET_ROLE_KEYWORDS`
@@ -32,19 +30,23 @@ The query shape is:
 For each query:
 - force Google's `Past 24 hours` filter
 - force Google's date-sorted / newest-first view when available
-- continue across all reachable Google result pages and relevant listing pages until there are no new candidate links left for that source
+- harvest one visible Google results page at a time
+- persist the full visible page of normalized results into `run_search_results`
+- continue across reachable Google result pages until there are no new pages left for that source
 - if Google shows a CAPTCHA or anti-bot interstitial, switch that same discovery step to a visible Camoufox window, wait as long as needed for manual solve, then continue in the same Camoufox session
 
-Do not collect the full query into a batch before applying.
+Discovery should not apply to jobs directly.
 
 Instead:
-- open each concrete job link as it is discovered
-- if a result is a listing page instead of a direct job page, extract the child job links from that page and process those child links one by one before returning to the search results
-- process links in the order the search result page or listing page presents them
+- store each visible Google result row in page order
+- persist the next Google page cursor on the query row
+- let the apply/resolution pool consume queued result rows immediately
 
-## Step 3: Extract Job Metadata and Ingest Immediately
+## Step 3: Resolve Queued Results, Expand Listing Pages, and Ingest Jobs
 
-For each opened candidate, extract when available:
+For each claimed queued result:
+
+- if the URL is a direct job page, extract when available:
 
 - title
 - company
@@ -54,14 +56,19 @@ For each opened candidate, extract when available:
 - posted date
 - date discovered
 
-Immediately call `ingest-job --allow-unverifiable-freshness` with the extracted metadata so SQLite performs normalization, filtering, and duplicate checks before any application attempt.
+- Immediately call `ingest-job --allow-unverifiable-freshness` with the extracted metadata so SQLite performs normalization, filtering, and duplicate checks before any application attempt.
 
-Persist query progress after every processed discovery result:
-- after each persisted `skip_result`, update `run_search_queries.results_seen`
-- after each persisted candidate ingestion, update both `results_seen` and `jobs_ingested`
+- if the URL is a listing page instead of a direct job page:
+  - extract child job links in visible order
+  - insert them into `run_search_results` as child rows
+  - mark the parent row `expanded`
+
+Persist progress after every step:
+- after each harvested Google page, update `run_search_queries.results_seen` and `cursor_json`
+- after each direct job ingestion, increment `run_search_queries.jobs_ingested`
 - keep the query row `in_progress` until `complete-query` or `fail-query`
 
-## Step 4: Filter and Decide Immediately
+## Step 4: Filter, Deduplicate, and Apply Immediately When Ready
 
 Keep jobs posted in the last 24 hours when freshness can be verified.
 
@@ -69,13 +76,13 @@ If posted date is ambiguous or unavailable:
 - try to infer it from the page
 - if freshness still cannot be verified, keep the job in the apply queue and record that freshness was unverified
 
-If `ingest-job` reports any of the following, skip to the next candidate immediately:
+If `ingest-job` reports any of the following, mark the queued result terminal and move on:
 - duplicate in the same run
 - duplicate from a prior terminal attempt
 - old / filtered out / non-matching role
 - non-U.S. location
 
-Only proceed to application when the job becomes `ready_to_apply`.
+Only proceed to application when the job becomes `ready_to_apply`. When a queued result produces a `ready_to_apply` job, the same apply worker should claim that job and apply immediately in the same worker session.
 
 ## Step 5: Apply
 
@@ -118,7 +125,7 @@ Only `failed` is retryable later, and only if the same job is rediscovered in a 
 ## Step 7: Close the Claimed Query and Continue Until Empty
 
 Repeat until:
-- after a query is fully processed, call `complete-query --run-id <id> --source-key <key>`
+- after a query is fully harvested, call `complete-query --run-id <id> --source-key <key>`
 - if a query-level failure prevents finishing that query, call `fail-query --run-id <id> --source-key <key> --message <message>` and continue with the remaining queries
 - a run may stall indefinitely while a visible CAPTCHA challenge is waiting for manual user interaction
 - after each backlog drain or query completion, call `workflow-status --run-id <id>`
@@ -127,6 +134,8 @@ Repeat until:
   - `applying_jobs = 0`
   - `queries_pending = 0`
   - `queries_in_progress = 0`
+  - `search_results_pending = 0`
+  - `search_results_processing = 0`
 - `drained_with_errors = true` is acceptable when some queries failed but every query is terminal and no jobs remain
 
 ## Step 8: Final Summary

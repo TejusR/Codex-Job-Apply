@@ -7,86 +7,72 @@
     "outcome": {
       "type": "string",
       "enum": [
-        "candidate",
-        "skip_result",
+        "results_page",
         "exhausted",
         "query_failed"
       ]
     },
-    "candidate": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snippet": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "visible_date": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "page_number": {
+            "type": "integer"
+          },
+          "rank": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "url",
+          "title",
+          "snippet",
+          "visible_date",
+          "page_number",
+          "rank"
+        ]
+      }
+    },
+    "next_page": {
       "type": [
         "object",
         "null"
       ],
       "additionalProperties": false,
       "properties": {
-        "raw_url": {
-          "type": "string",
-          "minLength": 1
-        },
-        "canonical_url": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source": {
-          "type": "string",
-          "minLength": 1
-        },
-        "title": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "company": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "location": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "posted_at": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "page_url": {
-          "type": "string",
-          "minLength": 1
+        "page_number": {
+          "type": "integer"
         }
       },
       "required": [
-        "raw_url",
-        "canonical_url",
-        "source",
-        "title",
-        "company",
-        "location",
-        "posted_at",
-        "page_url"
+        "page_number"
       ]
     },
-    "result_url": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "skip_reason": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "error_message": {
+    "query_error": {
       "type": [
         "string",
         "null"
@@ -95,9 +81,8 @@
   },
   "required": [
     "outcome",
-    "candidate",
-    "result_url",
-    "skip_reason",
-    "error_message"
+    "results",
+    "next_page",
+    "query_error"
   ]
 }

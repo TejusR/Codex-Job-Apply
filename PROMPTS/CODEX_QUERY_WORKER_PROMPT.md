@@ -1,46 +1,30 @@
-Read the workflow documents and perform exactly one discovery step for one claimed search query.
+Read the workflow documents and execute exactly one Google SERP harvesting turn for the single query in the runtime context.
 
 Requirements:
 - Use the repository files named in the runtime context as source of truth.
-- Use browser tooling for Google search and page inspection.
+- Use browser tooling to open Google for the exact query in the runtime context.
 - Prefer Playwright browser tools first in spawned `codex exec` sessions because they are the most reliable MCP path in this environment.
-- Use Camoufox only as a fallback when Playwright cannot complete the required search or page inspection step.
-- If Playwright encounters a CAPTCHA, anti-bot interstitial, or similar challenge on the Google search flow, treat it as a pause-and-recover condition instead of failing the query immediately.
-- On that challenge, open or reuse a visible Camoufox window for the same search step, emit only ASCII status text while waiting, and poll in bounded increments with no overall timeout until the challenge is cleared.
-- After the challenge clears, continue the same discovery step in that same Camoufox session and return the normal one-step result.
-- Force Google's Past 24 hours filter and newest-first ordering when available.
-- Process results in the order shown.
-- Skip any URL already present in `current_run_seen_urls`.
-- Skip any URL already listed in `query_skipped_results`.
-- If a search result is a listing page, traverse it until you can return one concrete candidate job or determine that the result should be skipped.
-- Do not apply to jobs in this worker. Discovery only.
-- Do not edit repository files.
-- Shutdown, control, or collaboration-status notifications are not discovery outcomes and must never be returned as `skip_result`.
+- Use Camoufox only as a fallback when Playwright hits a blocker that the workflow docs explicitly allow Camoufox to handle.
+- Respect the persisted query cursor in the runtime context. If a cursor is present, reopen Google and navigate to that next results page before harvesting.
+- Force Google's `Past 24 hours` filter and newest-first/date-sorted view when available.
+- Harvest the full visible SERP page only. Do not open each result page during this discovery turn.
+- Return normalized visible search results in page order.
+- Each result must include `url`, `title`, `snippet`, `visible_date`, `page_number`, and `rank`.
+- If Google shows a CAPTCHA or anti-bot interstitial, switch that same discovery turn to a visible Camoufox window, emit only ASCII status text while waiting, wait as long as needed for manual solve, then continue in the same Camoufox session.
+- Do not edit tracked repository source files.
 
-Return exactly one JSON object matching the provided schema:
-- `candidate`: you found one next concrete candidate job to hand back to the supervisor
-- `skip_result`: the next relevant result cannot be processed and should be persisted in the skip table
-- `exhausted`: no unseen relevant candidates remain for this query
-- `query_failed`: the query cannot continue because of a query-level blocker such as rate limits, search failures, or unrecoverable browser/tool breakage
+You must return one outcome for this single discovery turn:
+- `results_page` when you harvested at least one visible Google result from the current page
+- `exhausted` when there are no more Google result pages left for this query
+- `query_failed` when a query-level failure prevents harvesting this page
 
-Always include every top-level schema field. Set unused fields to `null`.
+Output contract:
+- Always return valid JSON matching the provided schema.
+- Always include `outcome`, `results`, `next_page`, and `query_error`.
+- For `results_page`, include every visible result from the current Google page in `results`.
+- Set `next_page` to an object describing the next page to visit, or `null` when the current page is the last page.
+- Set `query_error` to `null` unless the outcome is `query_failed`.
+- For `exhausted`, return an empty `results` list and `next_page = null`.
+- For `query_failed`, return an empty `results` list, `next_page = null`, and a non-empty `query_error`.
 
-For `candidate`, populate:
-- `raw_url`
-- `canonical_url`
-- `source`
-- `title`
-- `company`
-- `location`
-- `posted_at`
-- `page_url`
-
-For `skip_result`, populate:
-- `result_url`
-- `skip_reason`
-
-For `query_failed`, populate:
-- `error_message`
-- Use `query_failed` only when recovery is not possible after switching, such as Camoufox MCP failure, the browser/session being closed, or the page remaining unparsable after the challenge is clearly gone.
-
-Return JSON only.
+Do not return prose outside the JSON object.
