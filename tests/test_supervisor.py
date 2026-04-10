@@ -18,7 +18,12 @@ from job_apply_bot.db import (
     prepare_run,
     start_run,
 )
-from job_apply_bot.supervisor import apply_job_with_codex, discover_next_candidate_with_codex, run_workflow
+from job_apply_bot.supervisor import (
+    _validate_query_worker_payload,
+    apply_job_with_codex,
+    discover_next_candidate_with_codex,
+    run_workflow,
+)
 
 _CONTEXT_BLOCK_PATTERN = re.compile(r"```json\n(.*)\n```", re.DOTALL)
 
@@ -59,6 +64,68 @@ class SupervisorWorkflowTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+
+    def _query_candidate_result(
+        self,
+        *,
+        raw_url: str = "https://boards.greenhouse.io/acme/jobs/12345",
+        canonical_url: str | None = None,
+        source: str = "greenhouse",
+        title: str | None = "Software Engineer",
+        company: str | None = "Acme",
+        location: str | None = "Remote, United States",
+        posted_at: str | None = "2 hours ago",
+        page_url: str | None = None,
+    ) -> dict[str, object]:
+        resolved_canonical_url = raw_url if canonical_url is None else canonical_url
+        resolved_page_url = (
+            (resolved_canonical_url or raw_url) if page_url is None else page_url
+        )
+        return {
+            "outcome": "candidate",
+            "candidate": {
+                "raw_url": raw_url,
+                "canonical_url": resolved_canonical_url,
+                "source": source,
+                "title": title,
+                "company": company,
+                "location": location,
+                "posted_at": posted_at,
+                "page_url": resolved_page_url,
+            },
+            "result_url": None,
+            "skip_reason": None,
+            "error_message": None,
+        }
+
+    def _query_skip_result(
+        self, *, result_url: str, skip_reason: str
+    ) -> dict[str, object]:
+        return {
+            "outcome": "skip_result",
+            "candidate": None,
+            "result_url": result_url,
+            "skip_reason": skip_reason,
+            "error_message": None,
+        }
+
+    def _query_exhausted_result(self) -> dict[str, object]:
+        return {
+            "outcome": "exhausted",
+            "candidate": None,
+            "result_url": None,
+            "skip_reason": None,
+            "error_message": None,
+        }
+
+    def _query_failed_result(self, error_message: str) -> dict[str, object]:
+        return {
+            "outcome": "query_failed",
+            "candidate": None,
+            "result_url": None,
+            "skip_reason": None,
+            "error_message": error_message,
+        }
 
     def _make_fake_codex_runner(self, steps: list[object], calls: list[dict[str, object]]):
         def _fake_run(
@@ -172,19 +239,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
             steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "candidate",
-                        "candidate": {
-                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "source": "greenhouse",
-                            "title": "Software Engineer",
-                            "company": "Acme",
-                            "location": "Remote, United States",
-                            "posted_at": "2 hours ago",
-                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345"
-                        }
-                    },
+                    "write_json": self._query_candidate_result(),
                 },
                 {
                     "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
@@ -198,7 +253,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
             ]
 
@@ -241,11 +296,11 @@ class SupervisorWorkflowTests(unittest.TestCase):
             steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
             ]
 
@@ -270,19 +325,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
             steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "candidate",
-                        "candidate": {
-                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "source": "greenhouse",
-                            "title": "Software Engineer",
-                            "company": "Acme",
-                            "location": "Remote, United States",
-                            "posted_at": "2 hours ago",
-                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                        },
-                    },
+                    "write_json": self._query_candidate_result(),
                 },
                 {
                     "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
@@ -296,7 +339,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
             ]
 
@@ -351,7 +394,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
             ]
 
@@ -473,15 +516,14 @@ class SupervisorWorkflowTests(unittest.TestCase):
             steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "skip_result",
-                        "result_url": skipped_url,
-                        "skip_reason": "Listing page requires authentication before child jobs are visible.",
-                    },
+                    "write_json": self._query_skip_result(
+                        result_url=skipped_url,
+                        skip_reason="Listing page requires authentication before child jobs are visible.",
+                    ),
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
             ]
 
@@ -532,19 +574,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
             steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "candidate",
-                        "candidate": {
-                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "source": "greenhouse",
-                            "title": "Software Engineer",
-                            "company": "Acme",
-                            "location": "Remote, United States",
-                            "posted_at": "2 hours ago",
-                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                        },
-                    },
+                    "write_json": self._query_candidate_result(),
                 }
             ]
 
@@ -664,22 +694,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
                     "timeout": True,
-                    "write_json": {
-                        "outcome": "candidate",
-                        "candidate": {
-                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "source": "greenhouse",
-                            "title": "Software Engineer",
-                            "company": "Acme",
-                            "location": "Remote, United States",
-                            "posted_at": "2 hours ago",
-                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                        },
-                        "result_url": None,
-                        "skip_reason": None,
-                        "error_message": None,
-                    },
+                    "write_json": self._query_candidate_result(),
                 }
             ]
 
@@ -700,6 +715,199 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 [("succeeded", None)],
             )
 
+    def test_run_workflow_recovers_timed_out_query_candidate_from_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, enabled_search_sites="greenhouse")
+            prepared = prepare_run(db_path, root)
+            run_id = int(prepared["run_id"])
+            source_key = str(prepared["queries"][0]["source_key"])
+            candidate_payload = self._query_candidate_result(
+                raw_url="https://boards.greenhouse.io/acme/jobs/67890",
+                title="Backend Engineer",
+                posted_at="1 hour ago",
+            )
+            invalid_shutdown_payload = {
+                "outcome": "skip_result",
+                "candidate": None,
+                "result_url": None,
+                "skip_reason": "No user-facing action required for subagent shutdown notification.",
+                "error_message": None,
+            }
+
+            calls: list[dict[str, object]] = []
+            steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "timeout": True,
+                    "write_json": invalid_shutdown_payload,
+                    "stdout": "\n".join(
+                        (
+                            "codex",
+                            json.dumps(candidate_payload),
+                            json.dumps(invalid_shutdown_payload),
+                        )
+                    ),
+                },
+                {
+                    "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "write_json": {
+                        "application_status": "submitted",
+                        "confirmation_text": "Application received",
+                        "confirmation_url": "https://boards.greenhouse.io/acme/jobs/67890/thanks",
+                        "error_message": None,
+                        "findings": [],
+                    },
+                },
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "write_json": self._query_exhausted_result(),
+                },
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                summary = run_workflow(db_path, repo_root=root, run_id=run_id)
+
+            recovered_query = get_query(db_path, run_id=run_id, source_key=source_key)
+            self.assertIsNotNone(recovered_query)
+            self.assertEqual(summary["jobs_applied"], 1)
+            self.assertEqual(recovered_query["status"], "completed")
+            self.assertEqual(recovered_query["results_seen"], 1)
+            self.assertEqual(recovered_query["jobs_ingested"], 1)
+            self.assertEqual(
+                [call["schema"] for call in calls],
+                [
+                    "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "CODEX_QUERY_WORKER_SCHEMA.json",
+                ],
+            )
+            self.assertIn(
+                "https://boards.greenhouse.io/acme/jobs/67890",
+                calls[2]["context"]["current_run_seen_urls"],
+            )
+            self.assertEqual(
+                self._read_attempt_statuses(db_path),
+                [("succeeded", None), ("succeeded", 0), ("succeeded", 0)],
+            )
+
+    def test_run_workflow_marks_unrecoverable_query_timeout_as_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, enabled_search_sites="greenhouse")
+            prepared = prepare_run(db_path, root)
+            run_id = int(prepared["run_id"])
+            source_key = str(prepared["queries"][0]["source_key"])
+
+            calls: list[dict[str, object]] = []
+            steps: list[object] = [
+                {
+                    "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "timeout": True,
+                    "write_text": "{not valid json",
+                    "stdout": "codex\nnot-json",
+                    "stderr": json.dumps(
+                        {
+                            "outcome": "skip_result",
+                            "candidate": None,
+                            "result_url": None,
+                            "skip_reason": "No user-facing action required for subagent shutdown notification.",
+                            "error_message": None,
+                        }
+                    ),
+                }
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                summary = run_workflow(db_path, repo_root=root, run_id=run_id)
+
+            failed_query = get_query(db_path, run_id=run_id, source_key=source_key)
+            self.assertIsNotNone(failed_query)
+            self.assertEqual(summary["search_summary"]["failed_queries"], 1)
+            self.assertEqual(summary["search_summary"]["pending_queries"], 0)
+            self.assertEqual(summary["search_summary"]["in_progress_queries"], 0)
+            self.assertEqual(failed_query["status"], "failed")
+            self.assertEqual(
+                failed_query["last_error"],
+                "Codex query worker timed out.",
+            )
+            self.assertEqual(
+                self._read_attempt_statuses(db_path),
+                [("timed_out", None)],
+            )
+
+    def test_apply_job_with_codex_recovers_timed_out_payload_from_streams(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root)
+            run = start_run(db_path)
+            run_id = int(run["id"])
+            ingested = ingest_job(
+                db_path,
+                run_id=run_id,
+                raw_url="https://boards.greenhouse.io/acme/jobs/12345",
+                canonical_url=None,
+                source="greenhouse",
+                title="Software Engineer",
+                company="Acme",
+                location="Remote, United States",
+                posted_at="2 hours ago",
+                discovered_at="2026-04-07T12:00:00Z",
+                role_keywords=[],
+                allowed_locations=[],
+            )
+            job = next_job(db_path, mark_applying=True)
+            self.assertIsNotNone(job)
+
+            calls: list[dict[str, object]] = []
+            steps: list[object] = [
+                {
+                    "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "timeout": True,
+                    "write_text": "{not valid json",
+                    "stdout": "\n".join(
+                        (
+                            "codex",
+                            json.dumps(
+                                {
+                                    "application_status": "submitted",
+                                    "confirmation_text": "Application received",
+                                    "confirmation_url": "https://boards.greenhouse.io/acme/jobs/12345/thanks",
+                                    "error_message": None,
+                                    "findings": [],
+                                }
+                            ),
+                        )
+                    ),
+                }
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                result = apply_job_with_codex(
+                    db_path,
+                    repo_root=root,
+                    run_id=run_id,
+                    job_key=ingested.job_key,
+                )
+
+            self.assertEqual(result["application"]["status"], "submitted")
+            self.assertEqual(
+                self._read_attempt_statuses(db_path),
+                [("succeeded", None)],
+            )
+
     def test_run_workflow_tolerates_missing_worker_streams(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -709,22 +917,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
             steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "candidate",
-                        "candidate": {
-                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "source": "greenhouse",
-                            "title": "Software Engineer",
-                            "company": "Acme",
-                            "location": "Remote, United States",
-                            "posted_at": "2 hours ago",
-                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                        },
-                        "result_url": None,
-                        "skip_reason": None,
-                        "error_message": None,
-                    },
+                    "write_json": self._query_candidate_result(),
                     "stdout": None,
                     "stderr": None,
                 },
@@ -742,13 +935,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "exhausted",
-                        "candidate": None,
-                        "result_url": None,
-                        "skip_reason": None,
-                        "error_message": None,
-                    },
+                    "write_json": self._query_exhausted_result(),
                     "stdout": None,
                     "stderr": None,
                 },
@@ -775,19 +962,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
             first_steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "candidate",
-                        "candidate": {
-                            "raw_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                            "source": "greenhouse",
-                            "title": "Software Engineer",
-                            "company": "Acme",
-                            "location": "Remote, United States",
-                            "posted_at": "2 hours ago",
-                            "page_url": "https://boards.greenhouse.io/acme/jobs/12345",
-                        },
-                    },
+                    "write_json": self._query_candidate_result(),
                 },
                 {
                     "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
@@ -801,11 +976,10 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "skip_result",
-                        "result_url": "https://boards.greenhouse.io/acme/jobs/search",
-                        "skip_reason": "Listing page requires authentication before child jobs are visible.",
-                    },
+                    "write_json": self._query_skip_result(
+                        result_url="https://boards.greenhouse.io/acme/jobs/search",
+                        skip_reason="Listing page requires authentication before child jobs are visible.",
+                    ),
                 },
                 RuntimeError("worker crashed mid-query"),
             ]
@@ -830,19 +1004,11 @@ class SupervisorWorkflowTests(unittest.TestCase):
             resumed_steps: list[object] = [
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {
-                        "outcome": "candidate",
-                        "candidate": {
-                            "raw_url": "https://boards.greenhouse.io/acme/jobs/67890",
-                            "canonical_url": "https://boards.greenhouse.io/acme/jobs/67890",
-                            "source": "greenhouse",
-                            "title": "Backend Engineer",
-                            "company": "Acme",
-                            "location": "Remote, United States",
-                            "posted_at": "1 hour ago",
-                            "page_url": "https://boards.greenhouse.io/acme/jobs/67890",
-                        },
-                    },
+                    "write_json": self._query_candidate_result(
+                        raw_url="https://boards.greenhouse.io/acme/jobs/67890",
+                        title="Backend Engineer",
+                        posted_at="1 hour ago",
+                    ),
                 },
                 {
                     "schema": "CODEX_APPLY_WORKER_SCHEMA.json",
@@ -856,11 +1022,11 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
                 {
                     "schema": "CODEX_QUERY_WORKER_SCHEMA.json",
-                    "write_json": {"outcome": "exhausted"},
+                    "write_json": self._query_exhausted_result(),
                 },
             ]
 
@@ -895,6 +1061,41 @@ class SupervisorWorkflowTests(unittest.TestCase):
         self.assertIn("no overall timeout", prompt_text)
         self.assertIn("continue the same discovery step", prompt_text)
         self.assertIn("Use `query_failed` only", prompt_text)
+        self.assertIn("must never be returned as `skip_result`", prompt_text)
+
+    def test_query_worker_schema_and_validator_reject_skip_result_without_result_url(self) -> None:
+        schema_path = (
+            Path(__file__).resolve().parents[1]
+            / "PROMPTS"
+            / "CODEX_QUERY_WORKER_SCHEMA.json"
+        )
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        self.assertNotIn("oneOf", schema)
+        self.assertEqual(
+            schema["properties"]["outcome"]["enum"],
+            ["candidate", "skip_result", "exhausted", "query_failed"],
+        )
+        self.assertEqual(
+            schema["properties"]["result_url"]["type"],
+            ["string", "null"],
+        )
+        self.assertEqual(
+            schema["properties"]["skip_reason"]["type"],
+            ["string", "null"],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "Field 'result_url' must be a non-empty string.",
+        ):
+            _validate_query_worker_payload(
+                {
+                    "outcome": "skip_result",
+                    "candidate": None,
+                    "result_url": None,
+                    "skip_reason": "No user-facing action required for subagent shutdown notification.",
+                    "error_message": None,
+                }
+            )
 
     def test_apply_worker_prompt_contract_mentions_manual_camoufox_wait(self) -> None:
         prompt_path = Path(__file__).resolve().parents[1] / "PROMPTS" / "CODEX_APPLY_WORKER_PROMPT.md"

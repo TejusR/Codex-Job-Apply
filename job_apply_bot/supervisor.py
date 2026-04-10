@@ -591,17 +591,21 @@ def _invoke_codex_worker(
             )
         except subprocess.TimeoutExpired as exc:
             last_error = _worker_timeout_message(worker_type, timeout_seconds)
+            timeout_stdout = _coerce_timeout_stream(exc.stdout)
+            timeout_stderr = _coerce_timeout_stream(exc.stderr)
             _write_worker_log(
                 log_path,
                 command=command,
                 prompt_text=prompt_for_attempt,
-                stdout=_coerce_timeout_stream(exc.stdout),
-                stderr=_coerce_timeout_stream(exc.stderr),
+                stdout=timeout_stdout,
+                stderr=timeout_stderr,
                 exit_code=None,
                 error_message=last_error,
             )
-            recovered_payload = _load_valid_worker_payload(
+            recovered_payload = _recover_timed_out_worker_payload(
                 result_path,
+                stdout=timeout_stdout,
+                stderr=timeout_stderr,
                 validator=validator,
             )
             if recovered_payload is not None:
@@ -635,7 +639,12 @@ def _invoke_codex_worker(
                 exit_code=None,
                 error_message=last_error,
             )
-            continue
+            raise WorkerExecutionError(
+                last_error,
+                failure_bundle_dir=failure_bundle_dir,
+                result_path=result_path,
+                log_path=log_path,
+            )
 
         _write_worker_log(
             log_path,
@@ -751,6 +760,31 @@ def _worker_timeout_message(worker_type: str, timeout_seconds: int | None) -> st
     return f"Codex {worker_type} worker timed out after {timeout_seconds} seconds."
 
 
+def _recover_timed_out_worker_payload(
+    result_path: Path,
+    *,
+    stdout: str,
+    stderr: str,
+    validator,
+) -> dict[str, object] | None:
+    try:
+        payload = _load_valid_worker_payload(result_path, validator=validator)
+    except ValueError:
+        payload = None
+    if payload is not None:
+        return payload
+
+    last_valid_payload: dict[str, object] | None = None
+    for stream in (stdout, stderr):
+        recovered = _load_last_valid_worker_payload_from_stream(
+            stream,
+            validator=validator,
+        )
+        if recovered is not None:
+            last_valid_payload = recovered
+    return last_valid_payload
+
+
 def _build_query_worker_prompt(
     repo_root: Path,
     validation: ProfileValidationResult,
@@ -826,6 +860,9 @@ def _compose_prompt(template: str, context: dict[str, object]) -> str:
 def _validate_query_worker_payload(payload: object) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Query worker output must be a JSON object.")
+    for field_name in ("outcome", "candidate", "result_url", "skip_reason", "error_message"):
+        if field_name not in payload:
+            raise ValueError(f"Query worker output is missing '{field_name}'.")
     outcome = payload.get("outcome")
     if outcome not in {"candidate", "skip_result", "exhausted", "query_failed"}:
         raise ValueError(f"Unsupported query worker outcome: {outcome!r}")
@@ -851,15 +888,26 @@ def _validate_query_worker_payload(payload: object) -> None:
         _require_non_empty_string(candidate, "page_url")
         for field_name in ("canonical_url", "title", "company", "location", "posted_at"):
             _require_nullable_string(candidate, field_name)
+        for field_name in ("result_url", "skip_reason", "error_message"):
+            _require_null_field(payload, field_name)
         return
 
     if outcome == "skip_result":
+        _require_null_field(payload, "candidate")
         _require_non_empty_string(payload, "result_url")
         _require_non_empty_string(payload, "skip_reason")
+        _require_null_field(payload, "error_message")
         return
 
     if outcome == "query_failed":
+        _require_null_field(payload, "candidate")
+        _require_null_field(payload, "result_url")
+        _require_null_field(payload, "skip_reason")
         _require_non_empty_string(payload, "error_message")
+        return
+
+    for field_name in ("candidate", "result_url", "skip_reason", "error_message"):
+        _require_null_field(payload, field_name)
 
 
 def _validate_apply_worker_payload(payload: object) -> None:
@@ -1097,10 +1145,38 @@ def _load_valid_worker_payload(
     return payload
 
 
+def _load_last_valid_worker_payload_from_stream(
+    stream: str,
+    *,
+    validator,
+) -> dict[str, object] | None:
+    last_valid_payload: dict[str, object] | None = None
+    for raw_line in stream.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        try:
+            validator(payload)
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            last_valid_payload = payload
+    return last_valid_payload
+
+
 def _require_non_empty_string(payload: dict[str, object], field_name: str) -> None:
     value = payload.get(field_name)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Field '{field_name}' must be a non-empty string.")
+
+
+def _require_null_field(payload: dict[str, object], field_name: str) -> None:
+    if payload.get(field_name) is not None:
+        raise ValueError(f"Field '{field_name}' must be null.")
 
 
 def _require_nullable_string(payload: dict[str, object], field_name: str) -> None:

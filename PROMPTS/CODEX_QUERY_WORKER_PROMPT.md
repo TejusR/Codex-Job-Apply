@@ -15,6 +15,7 @@ Requirements:
 - If a search result is a listing page, traverse it until you can return one concrete candidate job or determine that the result should be skipped.
 - Do not apply to jobs in this worker. Discovery only.
 - Do not edit repository files.
+- Shutdown, control, or collaboration-status notifications are not discovery outcomes and must never be returned as `skip_result`.
 
 Return exactly one JSON object matching the provided schema:
 - `candidate`: you found one next concrete candidate job to hand back to the supervisor
