@@ -3,15 +3,17 @@ Read the workflow documents and execute exactly one Google SERP harvesting turn 
 Requirements:
 - Use the repository files named in the runtime context as source of truth.
 - Use browser tooling to open Google for the exact query in the runtime context.
-- Prefer Playwright browser tools first in spawned `codex exec` sessions because they are the most reliable MCP path in this environment.
-- Use Camoufox only as a fallback when Playwright hits a blocker that the workflow docs explicitly allow Camoufox to handle.
+- Use Playwright browser tools only in spawned `codex exec` sessions.
 - Respect `profile.discovery_max_pages` from the runtime context and harvest at most that many Google result pages for this source.
 - Respect the persisted query cursor in the runtime context. If a cursor is present, reopen Google and navigate to that next results page before harvesting.
 - Force Google's `Past 24 hours` filter and newest-first/date-sorted view when available.
 - Harvest the full visible SERP page only. Do not open each result page during this discovery turn.
 - Return normalized visible search results in page order.
 - Each result must include `url`, `title`, `snippet`, `visible_date`, `page_number`, and `rank`.
-- If Google shows a CAPTCHA or anti-bot interstitial, switch that same discovery turn to a visible Camoufox window, emit only ASCII status text while waiting, wait as long as needed for manual solve, then continue in the same Camoufox session.
+- If Google shows a CAPTCHA or anti-bot interstitial, stay in the same Playwright session for that discovery turn.
+- Keep the challenge page open for manual solve, emit only ASCII status text while waiting, and poll the browser state every 10 seconds for up to 10 minutes from first detection.
+- Each poll must inspect the current page state, not just sleep. Continue only after challenge markers are gone and visible Google results or other normal SERP structure are back.
+- If the challenge is still present after 10 minutes, return `query_failed` with a clear message that the Playwright anti-bot wait window expired.
 - Do not edit tracked repository source files.
 
 You must return one outcome for this single discovery turn:

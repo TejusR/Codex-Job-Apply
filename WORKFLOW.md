@@ -33,7 +33,7 @@ For each query:
 - harvest one visible Google results page at a time
 - persist the full visible page of normalized results into `run_search_results`
 - continue across reachable Google result pages until there are no new pages left for that source or `APPLICANT_DISCOVERY_MAX_PAGES` pages have been harvested for that source
-- if Google shows a CAPTCHA or anti-bot interstitial, switch that same discovery step to a visible Camoufox window, wait as long as needed for manual solve, then continue in the same Camoufox session
+- if Google shows a CAPTCHA or anti-bot interstitial, keep that same Playwright page open, wait up to 10 minutes for manual solve, poll browser state every 10 seconds, then continue only if the normal SERP returns
 
 Discovery should not apply to jobs directly.
 
@@ -91,10 +91,10 @@ For each `ready_to_apply` job:
 1. Open job page in Playwright
 2. Confirm it is an application page
 3. Click apply if needed
-4. If Playwright encounters a CAPTCHA or clear anti-bot challenge for that specific job, reopen or reuse the same job in a visible `@camoufox-browser` window and continue the application there
-5. Wait as long as needed for the user to solve the challenge manually, using bounded polling with no overall timeout
-6. Continue the same application in that same Camoufox session after the challenge clears
-7. Use the Camoufox fallback only for the current affected job, then return to Playwright for the rest of the run
+4. If Playwright encounters a CAPTCHA or clear anti-bot challenge for that specific job, keep that same Playwright page open for manual solve
+5. Poll browser state every 10 seconds for up to 10 minutes while the user solves the challenge manually
+6. Continue the same application in that same Playwright session after challenge markers disappear and the normal application UI returns
+7. If the challenge is still present after 10 minutes, record `blocked` with a `captcha` finding for that job
 8. Fill required fields using local applicant data
 9. If a required answer is missing, make a reasonable assumption based on the applicant profile, resume, and `applicant.md` instead of skipping the job for that reason alone
 10. Keep any hard facts already present in the applicant files consistent, while using profile-based assumptions for missing supporting details such as salary expectations, start date, and concise free-response summaries
@@ -110,14 +110,14 @@ Do not skip a job solely because some application information is unavailable if 
 If the application cannot complete cleanly:
 
 - record `failed` for transient or unverifiable submission outcomes
-- record `blocked` for permanent workflow blockers such as login walls, unsupported flows, closed roles, disqualifying requirements, or CAPTCHA challenges that still block submission after the manual Camoufox fallback attempt
+- record `blocked` for permanent workflow blockers such as login walls, unsupported flows, closed roles, disqualifying requirements, or CAPTCHA challenges that still block submission after the 10-minute Playwright wait window
 - record `incomplete` only when the site requires a truthful hard fact or file that cannot be reasonably inferred from the applicant materials
 - add one or more structured `record-finding` entries with the application status, workflow stage, category, summary, detail, and page URL
 
 If Playwright hits a CAPTCHA:
-- treat the CAPTCHA signal as a tool-switch trigger for that job instead of marking it blocked immediately
-- open or reuse a visible Camoufox window, wait indefinitely for manual solve if needed, and continue the same job there
-- if Camoufox also cannot get past the challenge, record `blocked` and add a `record-finding` entry with category `captcha`
+- treat the CAPTCHA signal as a manual-solve wait trigger for that same Playwright session instead of marking it blocked immediately
+- poll browser state every 10 seconds for up to 10 minutes while the challenge is present
+- if the 10-minute wait expires and the challenge still blocks the workflow, record `blocked` and add a `record-finding` entry with category `captcha`
 
 Only `failed` is retryable later, and only if the same job is rediscovered in a future search run.
 `blocked`, `incomplete`, `submitted`, and `duplicate_skipped` are terminal outcomes for duplicate prevention.
@@ -127,7 +127,7 @@ Only `failed` is retryable later, and only if the same job is rediscovered in a 
 Repeat until:
 - after a query is fully harvested, call `complete-query --run-id <id> --source-key <key>`
 - if a query-level failure prevents finishing that query, call `fail-query --run-id <id> --source-key <key> --message <message>` and continue with the remaining queries
-- a run may stall indefinitely while a visible CAPTCHA challenge is waiting for manual user interaction
+- a run may pause for up to 10 minutes while a visible CAPTCHA challenge is waiting for manual user interaction
 - after each backlog drain or query completion, call `workflow-status --run-id <id>`
 - the run is complete only when `workflow-status` reports:
   - `ready_jobs = 0`

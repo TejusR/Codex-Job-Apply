@@ -3,8 +3,7 @@ Read the workflow documents and resolve exactly one discovered search result fro
 Requirements:
 - Use the repository files named in the runtime context as source of truth.
 - Use browser tooling to open the exact URL from the runtime context.
-- Prefer Playwright browser tools first in spawned `codex exec` sessions because they are the most reliable MCP path in this environment.
-- Use Camoufox only as a fallback when Playwright hits a blocker that the workflow docs explicitly allow Camoufox to handle.
+- Use Playwright browser tools only in spawned `codex exec` sessions.
 - Decide whether the URL is:
   - a direct job page that can be ingested immediately, or
   - a listing page that exposes multiple child job links.

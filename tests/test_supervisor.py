@@ -259,13 +259,31 @@ class SupervisorWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must include at least one visible result"):
             _validate_query_worker_payload(self._query_results_page(next_page=None))
 
-    def test_query_worker_prompt_mentions_ascii_camoufox_wait(self) -> None:
+    def test_query_worker_prompt_mentions_playwright_captcha_wait_contract(self) -> None:
         prompt_path = Path(__file__).resolve().parents[1] / "PROMPTS" / "CODEX_QUERY_WORKER_PROMPT.md"
         prompt_text = prompt_path.read_text(encoding="utf-8")
-        self.assertIn("visible Camoufox window", prompt_text)
+        self.assertIn("Playwright browser tools only", prompt_text)
+        self.assertIn("same Playwright session", prompt_text)
         self.assertIn("ASCII status text", prompt_text)
+        self.assertIn("every 10 seconds", prompt_text)
+        self.assertIn("10 minutes", prompt_text)
+        self.assertIn("poll the browser state", prompt_text)
         self.assertIn("Harvest the full visible SERP page only", prompt_text)
         self.assertIn("profile.discovery_max_pages", prompt_text)
+        self.assertNotIn("Camou" "fox", prompt_text)
+
+    def test_apply_worker_prompt_mentions_playwright_captcha_wait_contract(self) -> None:
+        prompt_path = Path(__file__).resolve().parents[1] / "PROMPTS" / "CODEX_APPLY_WORKER_PROMPT.md"
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        self.assertIn("Playwright browser tools only", prompt_text)
+        self.assertIn("same Playwright session", prompt_text)
+        self.assertIn("ASCII status text", prompt_text)
+        self.assertIn("every 10 seconds", prompt_text)
+        self.assertIn("10 minutes", prompt_text)
+        self.assertIn("poll the browser state", prompt_text)
+        self.assertIn("category `captcha`", prompt_text)
+        self.assertIn("Do not use `blocked` only because a CAPTCHA appeared", prompt_text)
+        self.assertNotIn("Camou" "fox", prompt_text)
 
     def test_resolve_worker_prompt_mentions_listing_page_cap(self) -> None:
         prompt_path = Path(__file__).resolve().parents[1] / "PROMPTS" / "CODEX_RESOLVE_WORKER_PROMPT.md"

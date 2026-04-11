@@ -1,6 +1,6 @@
 # Job Apply Bot
 
-This project is a supervised Codex workflow for finding recent jobs and applying one by one with Playwright MCP as the default browser engine and `@camoufox-browser` as a visible manual-solve CAPTCHA fallback for both search discovery and applications.
+This project is a supervised Codex workflow for finding recent jobs and applying one by one with Playwright MCP as the sole browser engine, including manual-solve CAPTCHA recovery in the same Playwright session.
 
 ## Objective
 
@@ -19,14 +19,13 @@ Automate this loop:
 5. Filter jobs posted in the last 24 hours when freshness can be verified
 6. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
 7. Keep a SQLite database of jobs, application outcomes, structured workflow findings, and per-run query progress
-8. Start each discovery/application step in Playwright, switch only the affected step to `@camoufox-browser` if a CAPTCHA blocks Playwright, then return to Playwright for the rest of the run
+8. Keep each discovery/application step in Playwright, wait up to 10 minutes for manual CAPTCHA solve in that same browser session, and poll browser state until the page becomes usable again or the wait window expires
 9. Apply one by one in discovery order until no jobs remain
 
 ## Components
 
 - Codex for orchestration and code generation
-- Playwright MCP for search, extraction, and the default application flow
-- `@camoufox-browser` for visible manual CAPTCHA or anti-bot fallback on a single affected discovery/application step
+- Playwright MCP for search, extraction, application flow, and manual CAPTCHA recovery in the same browser session
 - SQLite for persistence and deduplication
 
 ## Files
@@ -52,7 +51,7 @@ Automate this loop:
 - Do not skip a job solely because freshness could not be verified
 - Process newly discovered jobs immediately instead of batching all sources first
 - Continue until queue is empty
-- Start in Playwright and switch to Camoufox only when a specific job hits a CAPTCHA or anti-bot challenge
+- Handle CAPTCHA and anti-bot pages in the same Playwright session with a 10-minute manual-solve wait and continuous browser-state polling
 - Keep hard facts consistent with the applicant files
 - Use reasonable profile-based assumptions for missing supporting application answers instead of skipping a job solely for that reason
 - Only `failed` outcomes are retryable, and only when the job is rediscovered in a future run
@@ -60,11 +59,10 @@ Automate this loop:
 
 ## Browser Strategy
 
-- Use Playwright MCP for Google search, listing traversal, metadata extraction, and normal application flows.
-- If Playwright encounters a visible CAPTCHA, reCAPTCHA iframe, challenge page, or a failure clearly caused by anti-bot protection for the current search/application step, reopen or reuse that same step in `@camoufox-browser`.
-- Visible Camoufox waits may last indefinitely while the user solves the challenge manually.
-- Keep the Camoufox fallback scoped to that one affected step, then return to Playwright for the rest of the run.
-- If Camoufox cannot get past the challenge, record the discovery step as `query_failed` or the application as `blocked`, depending on which workflow step was affected.
+- Use Playwright MCP for Google search, listing traversal, metadata extraction, and application flows.
+- If Playwright encounters a visible CAPTCHA, reCAPTCHA iframe, challenge page, or a failure clearly caused by anti-bot protection for the current search/application step, keep that same Playwright page open for manual solve.
+- Poll browser state every 10 seconds for up to 10 minutes, and continue only after challenge markers disappear and the expected page content is visible again.
+- If the 10-minute window expires first, record the discovery step as `query_failed` or the application as `blocked`, depending on which workflow step was affected.
 
 ## Applicant Inputs
 
@@ -145,7 +143,8 @@ By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
 `finish-run` now refuses unresolved work unless `--force` is supplied.
 `validate-profile` still emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites, along with the resolved discovery page cap in the emitted profile payload.
 `run-workflow` is the primary entrypoint. It owns the outer loop in Python and launches short-lived `codex exec` workers for one discovery step or one job application attempt at a time.
-Those workers run in Codex's non-interactive bypass mode so browser MCP tools remain usable from spawned sessions.
+Those workers run in Codex's non-interactive bypass mode so Playwright MCP tools remain usable from spawned sessions.
+If a search or application CAPTCHA appears, a worker keeps the same Playwright session open, polls browser state every 10 seconds for up to 10 minutes, and then either continues or returns the appropriate terminal outcome.
 Any unsuccessful apply attempt now leaves a raw local failure bundle under `data/codex_worker_artifacts/run-<id>/apply/`. These bundles may contain PII-filled form data, screenshots, HTML, and browser logs.
 If an apply attempt fails because of an internal worker problem such as `codex_worker_error`, use `requeue-runner-failures` to put those jobs back into `ready_to_apply` within the same run after you deploy the fix.
 
