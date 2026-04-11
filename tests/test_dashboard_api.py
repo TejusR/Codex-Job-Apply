@@ -236,6 +236,7 @@ class DashboardApiTests(unittest.TestCase):
 
             self.assertEqual(list_response.status_code, 200, list_response.text)
             self.assertEqual(list_response.json()["total"], 1)
+            self.assertEqual(list_response.json()["available_sources"], ["greenhouse"])
             self.assertEqual(applied_detail.status_code, 200, applied_detail.text)
             self.assertEqual(
                 applied_detail.json()["resume_info"]["source"], "application_snapshot"

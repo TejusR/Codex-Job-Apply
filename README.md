@@ -14,7 +14,7 @@ Automate this loop:
    - the current `.env` role list is `software engineer`, `backend engineer`, `full stack engineer`, `software developer`
    - force `Past 24 hours`
    - force Google's date-sorted / newest-first view when available
-   - paginate exhaustively through reachable result pages and relevant listing pages
+   - paginate through up to the configured discovery page cap for Google result pages and relevant listing pages
 4. Open discovered job links immediately, or expand listing pages into child job links and process those one by one before returning to search
 5. Filter jobs posted in the last 24 hours when freshness can be verified
 6. Keep jobs with unverified freshness eligible for application, while recording that the freshness could not be verified
@@ -102,6 +102,18 @@ APPLICANT_ENABLED_SEARCH_SITES=greenhouse, ashby, workable, jobvite, jazz, adp, 
 
 If the key is omitted, the workflow defaults to all supported sources.
 
+### Discovery Page Cap
+
+Use `APPLICANT_DISCOVERY_MAX_PAGES` in `.env` to cap discovery pagination for both Google result pages and job-board listing pages.
+
+Example:
+
+```bash
+APPLICANT_DISCOVERY_MAX_PAGES=5
+```
+
+If the key is omitted or invalid, the workflow defaults to `5`.
+
 ## Support CLI
 
 The repo now includes a Python CLI for the deterministic workflow steps plus a supervised Codex runner:
@@ -131,7 +143,7 @@ By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
 `workflow-status` is the completion gate: the workflow is done only when it reports `drained=true`.
 `next-job` remains available for draining backlog in SQLite order; new discovery should otherwise ingest and apply each candidate immediately.
 `finish-run` now refuses unresolved work unless `--force` is supplied.
-`validate-profile` still emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites.
+`validate-profile` still emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites, along with the resolved discovery page cap in the emitted profile payload.
 `run-workflow` is the primary entrypoint. It owns the outer loop in Python and launches short-lived `codex exec` workers for one discovery step or one job application attempt at a time.
 Those workers run in Codex's non-interactive bypass mode so browser MCP tools remain usable from spawned sessions.
 Any unsuccessful apply attempt now leaves a raw local failure bundle under `data/codex_worker_artifacts/run-<id>/apply/`. These bundles may contain PII-filled form data, screenshots, HTML, and browser logs.

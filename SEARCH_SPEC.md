@@ -48,9 +48,9 @@ For each Google query:
 - force the `Past 24 hours` filter
 - force Google's date-sorted / most-recent view when it is available
 - if Google does not expose a usable date-sorted control for that query, keep the 24-hour filter and rely on page-level date extraction while processing results in the order they are surfaced
-- continue paginating through all reachable result pages for the enabled source until there are no new relevant candidates left to ingest
+- continue paginating through Google result pages for the enabled source until there are no new relevant candidates left to ingest or the configured `APPLICANT_DISCOVERY_MAX_PAGES` cap is reached
 - open each result immediately instead of collecting the whole query into a batch first
-- if a result is a listing page, extract child job links from that page and process those child links in page order before returning to Google
+- if a result is a listing page, extract child job links across up to `APPLICANT_DISCOVERY_MAX_PAGES` listing pages and process those child links in page order before returning to Google
 
 ## Preferred Result Types
 

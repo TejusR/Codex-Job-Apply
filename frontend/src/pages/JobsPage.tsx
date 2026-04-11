@@ -64,6 +64,13 @@ export function JobsPage() {
     ?.toString()
     .replace(/^Error:\s*/, "");
 
+  useEffect(() => {
+    const availableSources = jobsQuery.data?.available_sources ?? [];
+    if (source && !availableSources.includes(source)) {
+      setSource("");
+    }
+  }, [jobsQuery.data?.available_sources, source]);
+
   return (
     <section className="page-section">
       <div className="section-header fade-up">
@@ -123,11 +130,14 @@ export function JobsPage() {
 
           <label className="field">
             <span>Source</span>
-            <input
-              onChange={(event) => setSource(event.target.value)}
-              placeholder="greenhouse, ashby, lever..."
-              value={source}
-            />
+            <select onChange={(event) => setSource(event.target.value)} value={source}>
+              <option value="">All sources</option>
+              {jobsQuery.data?.available_sources.map((sourceOption) => (
+                <option key={sourceOption} value={sourceOption}>
+                  {titleCase(sourceOption)}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label className="field field--search">

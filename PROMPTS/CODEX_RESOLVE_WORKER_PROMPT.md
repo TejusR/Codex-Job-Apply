@@ -9,7 +9,8 @@ Requirements:
   - a direct job page that can be ingested immediately, or
   - a listing page that exposes multiple child job links.
 - For a direct job page, extract the best available job metadata and return a single resolved job.
-- For a listing page, extract child job URLs in visible page order and return them as normalized child results.
+- For a listing page, traverse listing pagination in page order and collect child job URLs from up to the first `profile.discovery_max_pages` listing pages.
+- For a listing page, return all collected child jobs as normalized child results, and set each child result's `page_number` to the listing page where it was found.
 - Do not submit an application during this step.
 - If the page is not useful for the workflow, return `skip_result` with a concrete reason.
 - If an unrecoverable resolution error happens, return `result_failed` with a concrete error message.

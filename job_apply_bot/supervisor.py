@@ -39,7 +39,12 @@ from .db import (
     update_worker_session,
     workflow_status,
 )
-from .profile import ProfileValidationResult, parse_applicant_markdown, validate_profile
+from .profile import (
+    DEFAULT_DISCOVERY_MAX_PAGES,
+    ProfileValidationResult,
+    parse_applicant_markdown,
+    validate_profile,
+)
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "PROMPTS"
 QUERY_WORKER_PROMPT_PATH = PROMPTS_DIR / "CODEX_QUERY_WORKER_PROMPT.md"
@@ -328,6 +333,24 @@ def _run_query_turn(
             "query_error": f"Query {source_key} is not claimable from status {query['status']}.",
         }
 
+    discovery_max_pages = _resolved_discovery_max_pages(validation)
+    current_page_number = _query_page_number(query)
+    if current_page_number > discovery_max_pages:
+        complete_query(
+            config.db_path,
+            run_id=run_id,
+            source_key=source_key,
+            results_seen=int(query.get("results_seen") or 0),
+            jobs_ingested=int(query.get("jobs_ingested") or 0),
+            cursor_json=None,
+        )
+        return {
+            "outcome": "exhausted",
+            "results": [],
+            "next_page": None,
+            "query_error": None,
+        }
+
     checkpoint_query_progress(
         config.db_path,
         run_id=run_id,
@@ -400,7 +423,11 @@ def _run_query_turn(
             results=results,
         )
         results_seen += len(results)
-        next_page = payload.get("next_page")
+        next_page = _bounded_next_page(
+            payload.get("next_page"),
+            current_page_number=current_page_number,
+            discovery_max_pages=discovery_max_pages,
+        )
         if next_page is None:
             complete_query(
                 config.db_path,
@@ -421,6 +448,7 @@ def _run_query_turn(
             )
         return {
             **payload,
+            "next_page": next_page,
             "inserted_count": insert_summary["inserted_count"],
         }
 
@@ -1734,6 +1762,44 @@ def _validate_result_item(payload: object) -> None:
         _require_nullable_string(payload, field_name)
     _require_integer(payload, "page_number")
     _require_integer(payload, "rank")
+
+
+def _resolved_discovery_max_pages(validation: ProfileValidationResult) -> int:
+    profile = validation.to_dict().get("profile")
+    if isinstance(profile, dict):
+        discovery_max_pages = profile.get("discovery_max_pages")
+        if isinstance(discovery_max_pages, int) and discovery_max_pages >= 1:
+            return discovery_max_pages
+    return DEFAULT_DISCOVERY_MAX_PAGES
+
+
+def _query_page_number(query: dict[str, object]) -> int:
+    cursor = _load_cursor_payload(query.get("cursor_json"))
+    if isinstance(cursor, dict):
+        page_number = cursor.get("page_number")
+        if isinstance(page_number, int) and page_number >= 1:
+            return page_number
+    return 1
+
+
+def _bounded_next_page(
+    next_page: object,
+    *,
+    current_page_number: int,
+    discovery_max_pages: int,
+) -> dict[str, object] | None:
+    if current_page_number >= discovery_max_pages:
+        return None
+    if not isinstance(next_page, dict):
+        return None
+    page_number = next_page.get("page_number")
+    if not isinstance(page_number, int):
+        return None
+    if page_number < 1:
+        return None
+    if page_number > discovery_max_pages:
+        return None
+    return next_page
 
 
 def _validate_candidate_payload(payload: object) -> None:

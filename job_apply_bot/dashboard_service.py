@@ -201,6 +201,12 @@ def list_jobs(
             tuple(params),
         ).fetchone()
         total = int(total_row["count"]) if total_row is not None else 0
+        available_sources = _list_job_sources(
+            connection,
+            run_id=run_id,
+            status=status,
+            q=q,
+        )
 
         rows = connection.execute(
             f"""
@@ -237,6 +243,7 @@ def list_jobs(
     total_pages = max(1, math.ceil(total / resolved_page_size)) if total else 1
     return JobListResponse(
         items=items,
+        available_sources=available_sources,
         page=resolved_page,
         page_size=resolved_page_size,
         total=total,
@@ -546,6 +553,39 @@ def _build_job_filters(
         term = f"%{search_text.lower()}%"
         params.extend([term, term, term, term, term, term])
     return filters, params
+
+
+def _list_job_sources(
+    connection: sqlite3.Connection,
+    *,
+    run_id: int | None,
+    status: str | None,
+    q: str | None,
+) -> list[str]:
+    filters, params = _build_job_filters(
+        connection,
+        run_id=run_id,
+        status=status,
+        source=None,
+        q=q,
+    )
+    filters.extend(
+        [
+            "jobs.source IS NOT NULL",
+            "TRIM(jobs.source) <> ''",
+        ]
+    )
+    where_sql = "WHERE " + " AND ".join(filters)
+    rows = connection.execute(
+        f"""
+        SELECT DISTINCT jobs.source
+        FROM jobs
+        {where_sql}
+        ORDER BY LOWER(jobs.source) ASC
+        """,
+        tuple(params),
+    ).fetchall()
+    return [str(row["source"]) for row in rows]
 
 
 def _job_list_item_from_row(

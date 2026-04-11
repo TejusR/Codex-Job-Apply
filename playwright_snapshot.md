@@ -1,0 +1,36 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic [ref=e25]:
+      - banner [ref=e26]:
+        - generic [ref=e27]
+      - generic [ref=e49]:
+        - navigation [ref=e51]
+        - main [ref=e55]
+    - dialog "Cookie Consent" [active] [ref=e13]:
+      - generic [ref=e15]:
+        - text: This website uses cookies to improve user’s experience, personalise ads and analyse traffic. You can accept all cookies, decline all optional cookies, or manage your cookie settings. To learn more, view our
+        - link "cookies policy" [ref=e16] [cursor=pointer]:
+          - /url: https://www.workable.com/cookies
+        - text: .
+      - generic [ref=e17]:
+        - button "Cookies settings" [ref=e18] [cursor=pointer]
+        - generic [ref=e19]
+  - contentinfo [ref=e118]:
+    - generic [ref=e119]:
+      - link "View website" [ref=e121] [cursor=pointer]:
+        - /url: http://servant.io
+      - generic [ref=e122]:
+        - link "View all jobs" [ref=e123] [cursor=pointer]:
+          - /url: /servant/
+        - link "Help" [ref=e124] [cursor=pointer]:
+          - /url: https://jobseekers.workable.com/hc/en
+    - generic [ref=e127]:
+      - link "Accessibility" [ref=e129] [cursor=pointer]:
+        - /url: https://workable.com/web-accessibility-statement
+        - text: Accessibility
+        - img [ref=e130]
+      - button "Cookie settings" [ref=e133] [cursor=pointer]
+      - generic [ref=e134]:
+        - text: Powered by
+        - link "Workable" [ref=e135] [cursor=pointer]:
+          - /url: https://jobs.workable.com/?utm_campaign=careers_page&utm_content=careers_page&utm_medium=feature&utm_source=careers_page

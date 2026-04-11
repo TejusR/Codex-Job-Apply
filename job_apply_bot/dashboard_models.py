@@ -200,6 +200,7 @@ class RunsResponse(BaseModel):
 
 class JobListResponse(BaseModel):
     items: list[JobListItem]
+    available_sources: list[str]
     page: int
     page_size: int
     total: int

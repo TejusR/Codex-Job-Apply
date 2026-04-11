@@ -197,6 +197,7 @@ export interface RunsResponse {
 
 export interface JobListResponse {
   items: JobListItem[];
+  available_sources: string[];
   page: number;
   page_size: number;
   total: number;

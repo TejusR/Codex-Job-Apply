@@ -12,6 +12,7 @@ from .search import (
 )
 
 UNKNOWN_TOKENS = {"", "unknown", "todo", "tbd", "n/a", "na", "fill-me"}
+DEFAULT_DISCOVERY_MAX_PAGES = 5
 
 REQUIRED_ENV_KEYS = (
     "APPLICANT_FULL_NAME",
@@ -34,6 +35,7 @@ OPTIONAL_ENV_KEYS = (
     "APPLICANT_ALLOWED_LOCATIONS",
     "APPLICANT_REMOTE_PREFERENCE",
     "APPLICANT_ENABLED_SEARCH_SITES",
+    "APPLICANT_DISCOVERY_MAX_PAGES",
 )
 
 SECTION_PATTERN = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
@@ -102,6 +104,30 @@ def parse_search_sites(value: str | None) -> list[str]:
         enabled_sites.append(canonical_site)
         seen_sites.add(canonical_site)
     return enabled_sites
+
+
+def parse_discovery_max_pages(value: str | None) -> tuple[int, str | None]:
+    normalized = normalize_value(value)
+    if normalized is None:
+        return DEFAULT_DISCOVERY_MAX_PAGES, None
+
+    try:
+        parsed = int(normalized)
+    except ValueError:
+        return (
+            DEFAULT_DISCOVERY_MAX_PAGES,
+            "APPLICANT_DISCOVERY_MAX_PAGES must be a positive integer. "
+            f"Using default {DEFAULT_DISCOVERY_MAX_PAGES}.",
+        )
+
+    if parsed < 1:
+        return (
+            DEFAULT_DISCOVERY_MAX_PAGES,
+            "APPLICANT_DISCOVERY_MAX_PAGES must be a positive integer. "
+            f"Using default {DEFAULT_DISCOVERY_MAX_PAGES}.",
+        )
+
+    return parsed, None
 
 
 def invalid_search_sites(value: str | None) -> list[str]:
@@ -185,6 +211,9 @@ class ProfileValidationResult:
         enabled_search_sites = parse_search_sites(
             self.env_values.get("APPLICANT_ENABLED_SEARCH_SITES")
         )
+        discovery_max_pages, _ = parse_discovery_max_pages(
+            self.env_values.get("APPLICANT_DISCOVERY_MAX_PAGES")
+        )
         return {
             "ok": self.ok,
             "env_path": str(self.env_path),
@@ -230,6 +259,7 @@ class ProfileValidationResult:
                     self.env_values.get("APPLICANT_REMOTE_PREFERENCE")
                 ),
                 "enabled_search_sites": enabled_search_sites,
+                "discovery_max_pages": discovery_max_pages,
             },
             "applicant_markdown_sections": sorted(self.applicant_sections),
         }
@@ -277,6 +307,11 @@ def validate_profile(root: Path) -> ProfileValidationResult:
             warnings.append(
                 "APPLICANT_ENABLED_SEARCH_SITES does not enable any supported sites."
             )
+        _, discovery_pages_warning = parse_discovery_max_pages(
+            env_values.get("APPLICANT_DISCOVERY_MAX_PAGES")
+        )
+        if discovery_pages_warning:
+            warnings.append(discovery_pages_warning)
     else:
         missing_required_files.append(".env")
 

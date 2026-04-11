@@ -31,24 +31,29 @@ from job_apply_bot.supervisor import (
 
 class SupervisorWorkflowTests(unittest.TestCase):
     def _write_valid_profile(
-        self, root: Path, *, enabled_search_sites: str = "greenhouse"
+        self,
+        root: Path,
+        *,
+        enabled_search_sites: str = "greenhouse",
+        discovery_max_pages: int | None = None,
     ) -> None:
+        env_lines = [
+            "APPLICANT_FULL_NAME=Tejus Ramesh",
+            "APPLICANT_EMAIL=rameshtejus@gmail.com",
+            "APPLICANT_PHONE=(480)-810-7760",
+            "APPLICANT_LOCATION=Tempe, AZ",
+            "APPLICANT_RESUME_PATH=resume.pdf",
+            "APPLICANT_US_WORK_AUTHORIZED=true",
+            "APPLICANT_REQUIRES_VISA_SPONSORSHIP=false",
+            "APPLICANT_TARGET_ROLE_KEYWORDS=software engineer, backend engineer",
+            "APPLICANT_ALLOWED_LOCATIONS=United States, Remote, Arizona",
+            f"APPLICANT_ENABLED_SEARCH_SITES={enabled_search_sites}",
+        ]
+        if discovery_max_pages is not None:
+            env_lines.append(f"APPLICANT_DISCOVERY_MAX_PAGES={discovery_max_pages}")
         (root / "resume.pdf").write_text("stub", encoding="utf-8")
         (root / ".env").write_text(
-            "\n".join(
-                (
-                    "APPLICANT_FULL_NAME=Tejus Ramesh",
-                    "APPLICANT_EMAIL=rameshtejus@gmail.com",
-                    "APPLICANT_PHONE=(480)-810-7760",
-                    "APPLICANT_LOCATION=Tempe, AZ",
-                    "APPLICANT_RESUME_PATH=resume.pdf",
-                    "APPLICANT_US_WORK_AUTHORIZED=true",
-                    "APPLICANT_REQUIRES_VISA_SPONSORSHIP=false",
-                    "APPLICANT_TARGET_ROLE_KEYWORDS=software engineer, backend engineer",
-                    "APPLICANT_ALLOWED_LOCATIONS=United States, Remote, Arizona",
-                    f"APPLICANT_ENABLED_SEARCH_SITES={enabled_search_sites}",
-                )
-            ),
+            "\n".join(env_lines),
             encoding="utf-8",
         )
         (root / "applicant.md").write_text(
@@ -260,6 +265,13 @@ class SupervisorWorkflowTests(unittest.TestCase):
         self.assertIn("visible Camoufox window", prompt_text)
         self.assertIn("ASCII status text", prompt_text)
         self.assertIn("Harvest the full visible SERP page only", prompt_text)
+        self.assertIn("profile.discovery_max_pages", prompt_text)
+
+    def test_resolve_worker_prompt_mentions_listing_page_cap(self) -> None:
+        prompt_path = Path(__file__).resolve().parents[1] / "PROMPTS" / "CODEX_RESOLVE_WORKER_PROMPT.md"
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        self.assertIn("profile.discovery_max_pages", prompt_text)
+        self.assertIn("listing pages", prompt_text)
 
     def test_discovery_turn_stores_page_results_and_resumes_session(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -316,6 +328,46 @@ class SupervisorWorkflowTests(unittest.TestCase):
             self.assertEqual(json.loads(str(query["cursor_json"])), {"page_number": 3})
             self.assertEqual(len(list_search_results(db_path, run_id=run_id, source_key=source_key)), 2)
             self.assertIn("resume", calls[1]["command"])
+            self.assertIn('"discovery_max_pages": 5', calls[0]["prompt"])
+
+    def test_discovery_turn_with_page_cap_of_one_completes_after_first_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, discovery_max_pages=1)
+            prepared = prepare_run(db_path, root)
+            run_id = int(prepared["run_id"])
+            source_key = str(prepared["queries"][0]["source_key"])
+            calls: list[dict[str, object]] = []
+            steps = [
+                {
+                    "expected_schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "thread_id": "thread-discovery-1",
+                    "write_json": self._query_results_page(
+                        self._result_item("https://boards.greenhouse.io/acme/jobs/1", rank=1),
+                        next_page={"page_number": 2},
+                    ),
+                }
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                result = discover_next_candidate_with_codex(
+                    db_path,
+                    repo_root=root,
+                    run_id=run_id,
+                    source_key=source_key,
+                )
+
+            self.assertEqual(result["outcome"], "results_page")
+            self.assertIsNone(result["next_page"])
+            query = get_query(db_path, run_id=run_id, source_key=source_key)
+            self.assertIsNotNone(query)
+            self.assertEqual(query["status"], "completed")
+            self.assertIsNone(query["cursor_json"])
+            self.assertIn('"discovery_max_pages": 1', calls[0]["prompt"])
 
     def test_apply_pool_claims_distinct_search_results(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -474,6 +526,145 @@ class SupervisorWorkflowTests(unittest.TestCase):
             self.assertEqual(statuses["https://boards.greenhouse.io/acme/jobs/1"], "applied")
             self.assertEqual(statuses["https://boards.greenhouse.io/acme/jobs/listing"], "expanded")
             self.assertEqual(statuses["https://boards.greenhouse.io/acme/jobs/2"], "applied")
+
+    def test_run_workflow_processes_multi_page_listing_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, discovery_max_pages=5)
+            calls: list[dict[str, object]] = []
+            steps = [
+                {
+                    "expected_schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "thread_id": "discovery-thread",
+                    "write_json": self._query_results_page(
+                        self._result_item("https://boards.greenhouse.io/acme/jobs/listing", rank=1),
+                        next_page=None,
+                    ),
+                },
+                {
+                    "expected_schema": "CODEX_RESOLVE_WORKER_SCHEMA.json",
+                    "thread_id": "apply-thread",
+                    "write_json": self._expanded(
+                        self._result_item(
+                            "https://boards.greenhouse.io/acme/jobs/child-1",
+                            page_number=1,
+                            rank=1,
+                        ),
+                        self._result_item(
+                            "https://boards.greenhouse.io/acme/jobs/child-2",
+                            page_number=2,
+                            rank=1,
+                        ),
+                    ),
+                },
+                {
+                    "expect_resume_thread": "apply-thread",
+                    "write_json": self._resolved_job(
+                        raw_url="https://boards.greenhouse.io/acme/jobs/child-1",
+                        title="Software Engineer I",
+                    ),
+                },
+                {
+                    "expect_resume_thread": "apply-thread",
+                    "write_json": self._apply_result("submitted"),
+                },
+                {
+                    "expect_resume_thread": "apply-thread",
+                    "write_json": self._resolved_job(
+                        raw_url="https://boards.greenhouse.io/acme/jobs/child-2",
+                        title="Software Engineer II",
+                    ),
+                },
+                {
+                    "expect_resume_thread": "apply-thread",
+                    "write_json": self._apply_result("submitted"),
+                },
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ):
+                summary = run_workflow(
+                    db_path,
+                    repo_root=root,
+                    discovery_workers=1,
+                    apply_workers=1,
+                )
+
+            self.assertEqual(summary["jobs_applied"], 2)
+            rows = list_search_results(db_path, run_id=int(summary["id"]))
+            page_numbers = {str(row["url"]): int(row["page_number"]) for row in rows}
+            statuses = {str(row["url"]): str(row["status"]) for row in rows}
+            self.assertEqual(statuses["https://boards.greenhouse.io/acme/jobs/listing"], "expanded")
+            self.assertEqual(statuses["https://boards.greenhouse.io/acme/jobs/child-1"], "applied")
+            self.assertEqual(statuses["https://boards.greenhouse.io/acme/jobs/child-2"], "applied")
+            self.assertEqual(page_numbers["https://boards.greenhouse.io/acme/jobs/child-1"], 1)
+            self.assertEqual(page_numbers["https://boards.greenhouse.io/acme/jobs/child-2"], 2)
+            self.assertIn('"discovery_max_pages": 5', calls[1]["prompt"])
+
+    def test_listing_expansion_ignores_duplicate_child_urls_across_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, discovery_max_pages=5)
+            steps = [
+                {
+                    "expected_schema": "CODEX_QUERY_WORKER_SCHEMA.json",
+                    "thread_id": "discovery-thread",
+                    "write_json": self._query_results_page(
+                        self._result_item("https://boards.greenhouse.io/acme/jobs/listing", rank=1),
+                        next_page=None,
+                    ),
+                },
+                {
+                    "expected_schema": "CODEX_RESOLVE_WORKER_SCHEMA.json",
+                    "thread_id": "apply-thread",
+                    "write_json": self._expanded(
+                        self._result_item(
+                            "https://boards.greenhouse.io/acme/jobs/child-1",
+                            page_number=1,
+                            rank=1,
+                        ),
+                        self._result_item(
+                            "https://boards.greenhouse.io/acme/jobs/child-1",
+                            page_number=2,
+                            rank=1,
+                        ),
+                    ),
+                },
+                {
+                    "expect_resume_thread": "apply-thread",
+                    "write_json": self._resolved_job(
+                        raw_url="https://boards.greenhouse.io/acme/jobs/child-1",
+                    ),
+                },
+                {
+                    "expect_resume_thread": "apply-thread",
+                    "write_json": self._apply_result("submitted"),
+                },
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, []),
+            ):
+                summary = run_workflow(
+                    db_path,
+                    repo_root=root,
+                    discovery_workers=1,
+                    apply_workers=1,
+                )
+
+            self.assertEqual(summary["jobs_applied"], 1)
+            rows = list_search_results(db_path, run_id=int(summary["id"]))
+            child_rows = [
+                row
+                for row in rows
+                if str(row["url"]) == "https://boards.greenhouse.io/acme/jobs/child-1"
+            ]
+            self.assertEqual(len(child_rows), 1)
 
     def test_run_workflow_isolates_query_failure_from_other_queries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

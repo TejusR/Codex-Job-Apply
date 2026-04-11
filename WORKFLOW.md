@@ -32,7 +32,7 @@ For each query:
 - force Google's date-sorted / newest-first view when available
 - harvest one visible Google results page at a time
 - persist the full visible page of normalized results into `run_search_results`
-- continue across reachable Google result pages until there are no new pages left for that source
+- continue across reachable Google result pages until there are no new pages left for that source or `APPLICANT_DISCOVERY_MAX_PAGES` pages have been harvested for that source
 - if Google shows a CAPTCHA or anti-bot interstitial, switch that same discovery step to a visible Camoufox window, wait as long as needed for manual solve, then continue in the same Camoufox session
 
 Discovery should not apply to jobs directly.
@@ -59,7 +59,7 @@ For each claimed queued result:
 - Immediately call `ingest-job --allow-unverifiable-freshness` with the extracted metadata so SQLite performs normalization, filtering, and duplicate checks before any application attempt.
 
 - if the URL is a listing page instead of a direct job page:
-  - extract child job links in visible order
+  - extract child job links in visible order across up to `APPLICANT_DISCOVERY_MAX_PAGES` listing pages
   - insert them into `run_search_results` as child rows
   - mark the parent row `expanded`
 

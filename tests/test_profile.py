@@ -10,6 +10,93 @@ from job_apply_bot.search import SUPPORTED_SEARCH_SITES
 
 
 class ValidateProfileTests(unittest.TestCase):
+    def test_discovery_max_pages_defaults_to_five(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "resume.pdf").write_text("stub", encoding="utf-8")
+            (root / ".env").write_text(
+                textwrap.dedent(
+                    """
+                    APPLICANT_FULL_NAME=Tejus Ramesh
+                    APPLICANT_EMAIL=rameshtejus@gmail.com
+                    APPLICANT_PHONE=(480)-810-7760
+                    APPLICANT_LOCATION=Tempe, AZ
+                    APPLICANT_RESUME_PATH=resume.pdf
+                    APPLICANT_US_WORK_AUTHORIZED=true
+                    APPLICANT_REQUIRES_VISA_SPONSORSHIP=false
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            (root / "applicant.md").write_text(
+                "# Applicant Details\n\n## Work Authorization Notes\nProvided\n\n## Reusable Highlights\nProvided\n",
+                encoding="utf-8",
+            )
+
+            payload = validate_profile(root).to_dict()
+
+            self.assertEqual(payload["profile"]["discovery_max_pages"], 5)
+
+    def test_valid_discovery_max_pages_is_surfaced_in_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "resume.pdf").write_text("stub", encoding="utf-8")
+            (root / ".env").write_text(
+                textwrap.dedent(
+                    """
+                    APPLICANT_FULL_NAME=Tejus Ramesh
+                    APPLICANT_EMAIL=rameshtejus@gmail.com
+                    APPLICANT_PHONE=(480)-810-7760
+                    APPLICANT_LOCATION=Tempe, AZ
+                    APPLICANT_RESUME_PATH=resume.pdf
+                    APPLICANT_US_WORK_AUTHORIZED=true
+                    APPLICANT_REQUIRES_VISA_SPONSORSHIP=false
+                    APPLICANT_DISCOVERY_MAX_PAGES=7
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            (root / "applicant.md").write_text(
+                "# Applicant Details\n\n## Work Authorization Notes\nProvided\n\n## Reusable Highlights\nProvided\n",
+                encoding="utf-8",
+            )
+
+            payload = validate_profile(root).to_dict()
+
+            self.assertEqual(payload["profile"]["discovery_max_pages"], 7)
+
+    def test_invalid_discovery_max_pages_warns_and_falls_back_to_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "resume.pdf").write_text("stub", encoding="utf-8")
+            (root / ".env").write_text(
+                textwrap.dedent(
+                    """
+                    APPLICANT_FULL_NAME=Tejus Ramesh
+                    APPLICANT_EMAIL=rameshtejus@gmail.com
+                    APPLICANT_PHONE=(480)-810-7760
+                    APPLICANT_LOCATION=Tempe, AZ
+                    APPLICANT_RESUME_PATH=resume.pdf
+                    APPLICANT_US_WORK_AUTHORIZED=true
+                    APPLICANT_REQUIRES_VISA_SPONSORSHIP=false
+                    APPLICANT_DISCOVERY_MAX_PAGES=0
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            (root / "applicant.md").write_text(
+                "# Applicant Details\n\n## Work Authorization Notes\nProvided\n\n## Reusable Highlights\nProvided\n",
+                encoding="utf-8",
+            )
+
+            result = validate_profile(root)
+
+            self.assertIn(
+                "APPLICANT_DISCOVERY_MAX_PAGES must be a positive integer. Using default 5.",
+                result.warnings,
+            )
+            self.assertEqual(result.to_dict()["profile"]["discovery_max_pages"], 5)
+
     def test_enabled_search_sites_default_to_all_supported_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
