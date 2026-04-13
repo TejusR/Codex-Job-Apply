@@ -1,9 +1,0 @@
-[GET] https://c.smartrecruiters.com/sr-jobad/static/node_modules/@styles/blue-steel-alert/dist/index.css => [FAILED] net::ERR_BLOCKED_BY_ORB
-[GET] https://c.smartrecruiters.com/sr-jobad/static/node_modules/@fantastic/sr-notify/dist/css/sr-notify.css => [FAILED] net::ERR_BLOCKED_BY_ORB
-[GET] https://c.smartrecruiters.com/sr-jobad/static/node_modules/@styles/blue-steel-alert/dist/index.css => [FAILED] net::ERR_BLOCKED_BY_ORB
-[GET] https://c.smartrecruiters.com/sr-jobad/static/node_modules/@fantastic/sr-notify/dist/css/sr-notify.css => [FAILED] net::ERR_BLOCKED_BY_ORB
-[POST] https://rum.smartrecruiters.com/sink/ => [204] No Content
-[GET] https://jobs.smartrecruiters.com/jobad/companies/Miratech1/jobs/11658671658/other-jobs?lang=en&dcr_ci=Miratech1 => [200] OK
-[POST] https://jobs.smartrecruiters.com/cdn-cgi/rum? => [204] No Content
-[POST] https://jobs.smartrecruiters.com/cdn-cgi/challenge-platform/h/g/jsd/oneshot/b0a7532ac8ec/0.6869490569531346:1775863156:bn_YsRnB1PFkLtUSVFktGIezmH9y02LQYQKhi1eBPaU/9ea5c5af0dcb2ed5 => [200] OK
-[GET] https://rum-collector-2.pingdom.net/img/beacon.gif?id=583dc52531b8578ef77168dc&sAW=1536&sAH=912&bIW=1036&bIH=799&pD=32&dPR=1&or=landscape-primary&nT=0&rC=0&nS=0&cS=4&cE=95&dLE=4&dLS=3&fS=1&hS=43&rE=-1&rS=-1&reS=95&resS=976&resE=979&uEE=-1&uES=-1&dL=985&dI=1648&dCLES=1652&dCLEE=1657&dC=1785&lES=1785&lEE=1785&s=nt&title=Miratech%20Junior%20PHP%20Full%20Stack%20Engineer%20%7C%20SmartRecruiters&path=https%3A%2F%2Fjobs.smartrecruiters.com%2FMiratech1%2F744000120011537-junior-php-full-stack-engineer&ref=&sId=b8y0lfyy&sST=1775866270&sIS=1&rV=0&v=1.4.1 => [200] OK

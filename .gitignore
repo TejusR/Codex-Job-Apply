@@ -10,7 +10,10 @@ resume/
 data/
 artifacts/
 .codex/
-google-search-snapshot.yml
+tmp/
+backend-dashboard*.log
+frontend-dev*.log
+frontend/frontend-dev*.log
 
 # Python cache
 __pycache__/
@@ -20,7 +23,4 @@ __pycache__/
 # Frontend build output
 frontend/node_modules/
 frontend/dist/
-
-# Local dashboard logs
-backend-dashboard.log
-frontend/frontend-dev.log
+.pytest_cache/
