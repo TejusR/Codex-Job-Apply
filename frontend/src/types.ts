@@ -4,12 +4,19 @@ export type RunUiStatus =
   | "completed"
   | "completed_with_errors";
 
-export type ResumeSource = "application_snapshot" | "default_profile";
+export type ResumeSource =
+  | "job_tailored"
+  | "application_snapshot"
+  | "default_profile";
 
 export interface ResumeInfo {
   path: string | null;
   label: string | null;
   source: ResumeSource;
+  customization_id: number | null;
+  generated_at: string | null;
+  preview_url: string | null;
+  download_url: string | null;
 }
 
 export interface SearchSummary {
@@ -117,7 +124,26 @@ export interface ApplicationRow {
   confirmation_url: string | null;
   resume_path_used: string | null;
   resume_label_used: string | null;
+  resume_customization_id: number | null;
+  resume_info: ResumeInfo | null;
   error_message: string | null;
+}
+
+export interface ResumeCustomizationDetail {
+  id: number;
+  job_key: string;
+  run_id: number | null;
+  status: string;
+  created_at: string;
+  source_template_path: string | null;
+  rendered_tex_path: string | null;
+  rendered_pdf_path: string | null;
+  preview_content: string | null;
+  customization_payload_json: string | null;
+  compiler: string | null;
+  error_message: string | null;
+  preview_url: string | null;
+  download_url: string | null;
 }
 
 export interface FindingRow {

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from job_apply_bot.dashboard_api import create_app
 from job_apply_bot.db import (
+    create_resume_customization,
     finish_run,
     ingest_job,
     insert_search_results,
@@ -208,6 +209,7 @@ class DashboardApiTests(unittest.TestCase):
                 confirmation_url="https://boards.greenhouse.io/acme/jobs/12345/thanks",
                 error_message=None,
                 run_id=run_id,
+                resume_customization_id=None,
                 resume_path_used="resume/tailored-acme.pdf",
                 resume_label_used="tailored-acme.pdf",
             )
@@ -247,6 +249,79 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(
                 fallback_detail.json()["resume_info"]["label"], "resume.pdf"
             )
+
+    def test_resume_customization_endpoints_expose_preview_and_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, enabled_search_sites="greenhouse")
+            rendered_pdf = root / "tailored.pdf"
+            rendered_pdf.write_text("pdf-stub", encoding="utf-8")
+            run = start_run(db_path)
+            run_id = int(run["id"])
+
+            job = ingest_job(
+                db_path,
+                run_id=run_id,
+                raw_url="https://boards.greenhouse.io/acme/jobs/12345",
+                canonical_url=None,
+                source=None,
+                title="Software Engineer",
+                company="Acme",
+                location="Remote, United States",
+                posted_at="2 hours ago",
+                discovered_at="2026-04-09T12:00:00Z",
+                role_keywords=[],
+                allowed_locations=[],
+            )
+            customization = create_resume_customization(
+                db_path,
+                job_key=job.job_key,
+                run_id=run_id,
+                status="succeeded",
+                source_template_path=str(root / "resume-template.tex"),
+                job_description_hash="hash-1",
+                rendered_tex_path=str(root / "tailored.tex"),
+                rendered_pdf_path=str(rendered_pdf),
+                preview_content="# Preview",
+                customization_payload_json="{}",
+                compiler="pdflatex",
+                error_message=None,
+            )
+            record_application(
+                db_path,
+                job_key=job.job_key,
+                status="submitted",
+                confirmation_text="Submitted",
+                confirmation_url="https://boards.greenhouse.io/acme/jobs/12345/thanks",
+                error_message=None,
+                run_id=run_id,
+                resume_customization_id=int(customization["id"]),
+                resume_path_used=str(rendered_pdf),
+                resume_label_used="tailored.pdf",
+            )
+
+            client = self._client(root, db_path)
+            job_detail = client.get(f"/api/jobs/{job.job_key}")
+            customization_detail = client.get(
+                f"/api/resume-customizations/{customization['id']}"
+            )
+            customization_file = client.get(
+                f"/api/resume-customizations/{customization['id']}/file"
+            )
+
+            self.assertEqual(job_detail.status_code, 200, job_detail.text)
+            self.assertEqual(
+                job_detail.json()["resume_info"]["source"],
+                "job_tailored",
+            )
+            self.assertEqual(
+                job_detail.json()["application_history"][0]["resume_info"]["source"],
+                "job_tailored",
+            )
+            self.assertEqual(customization_detail.status_code, 200, customization_detail.text)
+            self.assertEqual(customization_detail.json()["preview_content"], "# Preview")
+            self.assertEqual(customization_file.status_code, 200, customization_file.text)
 
     def test_requeue_and_finish_endpoints_handle_conflicts_and_force_finish(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

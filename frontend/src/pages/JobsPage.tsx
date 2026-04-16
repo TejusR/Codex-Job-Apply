@@ -8,7 +8,12 @@ import {
 } from "react";
 import { useLocation } from "react-router-dom";
 
-import { fetchJobDetail, fetchJobs, fetchRuns } from "../api";
+import {
+  fetchJobDetail,
+  fetchJobs,
+  fetchResumeCustomizationDetail,
+  fetchRuns
+} from "../api";
 import { Drawer } from "../components/Drawer";
 import { EmptyState } from "../components/EmptyState";
 import { StatusBadge } from "../components/StatusBadge";
@@ -59,7 +64,20 @@ export function JobsPage() {
     refetchOnWindowFocus: false
   });
 
-  const errorMessage = [jobsQuery.error, detailQuery.error, runsQuery.error]
+  const customizationId = detailQuery.data?.resume_info.customization_id ?? null;
+  const resumeCustomizationQuery = useQuery({
+    queryKey: ["resume-customization", customizationId],
+    queryFn: () => fetchResumeCustomizationDetail(customizationId!),
+    enabled: customizationId !== null,
+    refetchOnWindowFocus: false
+  });
+
+  const errorMessage = [
+    jobsQuery.error,
+    detailQuery.error,
+    resumeCustomizationQuery.error,
+    runsQuery.error
+  ]
     .find(Boolean)
     ?.toString()
     .replace(/^Error:\s*/, "");
@@ -202,7 +220,9 @@ export function JobsPage() {
                       <td>{job.latest_application_status ?? "Not attempted"}</td>
                       <td>
                         <strong>{job.resume_info.label ?? "Default resume"}</strong>
-                        <span className="table-meta">{titleCase(job.resume_info.source)}</span>
+                        <span className="table-meta">
+                          {titleCase(job.resume_info.source)}
+                        </span>
                       </td>
                       <td>{formatDateTime(job.last_updated_at)}</td>
                     </tr>
@@ -271,15 +291,42 @@ export function JobsPage() {
               <div className="resume-card">
                 <strong>{detailQuery.data.resume_info.label ?? "Default resume"}</strong>
                 <p>{detailQuery.data.resume_info.path ?? "No resume path was recorded."}</p>
+                {detailQuery.data.resume_info.generated_at ? (
+                  <p className="table-meta">
+                    Generated {formatDateTime(detailQuery.data.resume_info.generated_at)}
+                  </p>
+                ) : null}
+                <div className="button-row">
+                  {detailQuery.data.resume_info.download_url ? (
+                    <a
+                      className="ghost-button"
+                      href={detailQuery.data.resume_info.download_url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Open PDF
+                    </a>
+                  ) : null}
+                </div>
               </div>
-              <div className="placeholder-card">
-                <p className="eyebrow">Reserved Space</p>
-                <h4>Resume Customization Panel</h4>
-                <p>
-                  This area is provisioned for a future iteration where job-specific
-                  resume tailoring and previewing will live.
-                </p>
-              </div>
+              {resumeCustomizationQuery.isLoading ? (
+                <div className="loading-panel">Loading tailored resume preview...</div>
+              ) : null}
+              {resumeCustomizationQuery.data?.preview_content ? (
+                <div className="placeholder-card">
+                  <p className="eyebrow">Inline Preview</p>
+                  <h4>Tailored Resume Snapshot</h4>
+                  <pre className="resume-preview">
+                    {resumeCustomizationQuery.data.preview_content}
+                  </pre>
+                </div>
+              ) : detailQuery.data.resume_info.customization_id ? (
+                <div className="placeholder-card">
+                  <p className="eyebrow">Inline Preview</p>
+                  <h4>Tailored Resume Snapshot</h4>
+                  <p>No stored preview content is available for this tailored resume.</p>
+                </div>
+              ) : null}
             </section>
 
             <section className="panel panel--inset">
@@ -302,6 +349,24 @@ export function JobsPage() {
                           {formatDateTime(application.applied_at)}
                         </span>
                       </div>
+                      {application.resume_info ? (
+                        <p className="table-meta">
+                          Resume: {application.resume_info.label ?? "Recorded resume"}
+                          {application.resume_info.download_url ? (
+                            <>
+                              {" "}
+                              ·{" "}
+                              <a
+                                href={application.resume_info.download_url}
+                                rel="noreferrer"
+                                target="_blank"
+                              >
+                                Open PDF
+                              </a>
+                            </>
+                          ) : null}
+                        </p>
+                      ) : null}
                       <p>{application.confirmation_text ?? application.error_message ?? "No extra details recorded."}</p>
                     </article>
                   ))}

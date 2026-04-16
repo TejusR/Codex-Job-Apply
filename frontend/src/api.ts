@@ -3,6 +3,7 @@ import type {
   JobListResponse,
   JobsQuery,
   RequeueRunnerFailuresResponse,
+  ResumeCustomizationDetail,
   RunActionResponse,
   RunDetail,
   RunsResponse
@@ -93,4 +94,12 @@ export function fetchJobs(query: JobsQuery): Promise<JobListResponse> {
 
 export function fetchJobDetail(jobKey: string): Promise<JobDetail> {
   return apiFetch<JobDetail>(`/api/jobs/${encodeURIComponent(jobKey)}`);
+}
+
+export function fetchResumeCustomizationDetail(
+  customizationId: number
+): Promise<ResumeCustomizationDetail> {
+  return apiFetch<ResumeCustomizationDetail>(
+    `/api/resume-customizations/${customizationId}`
+  );
 }

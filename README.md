@@ -73,6 +73,138 @@ Keep the real applicant files in the repository root:
 
 Committed templates are provided as `.env.example` and `applicant.md.example`.
 
+## Step-by-Step: Run the Workflow
+
+Use this path when you want to run the actual discovery + apply workflow from the command line.
+
+1. Install the Python dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+2. Create your local applicant files if you have not already:
+
+```bash
+cp .env.example .env
+cp applicant.md.example applicant.md
+```
+
+3. Fill in `.env` and `applicant.md` with your real applicant data.
+
+4. Make sure Codex and Playwright MCP are available in your environment.
+   See `MCP_SETUP.md` and `RUN_WITH_CODEX.md` if you still need to wire that up.
+
+5. Validate the profile before starting a run:
+
+```bash
+python -m job_apply_bot validate-profile
+```
+
+6. Start the workflow:
+
+```bash
+python -m job_apply_bot run-workflow
+```
+
+7. Watch progress for the active run in the SQLite database:
+
+```bash
+python -m job_apply_bot workflow-status --run-id <run_id>
+```
+
+8. If a run stops before it finishes, resume the same run instead of starting over:
+
+```bash
+python -m job_apply_bot run-workflow --run-id <run_id>
+```
+
+Notes:
+
+- The default SQLite database path is `data/job_apply_bot.sqlite3`.
+- `run-workflow` is the recommended main entrypoint. It handles `prepare-run`, worker orchestration, backlog recovery, and finishing the run when it drains successfully.
+- `finish-run` is only needed if you are driving the lower-level CLI commands manually.
+- If you need to recover jobs that failed because of an internal Codex worker error, run:
+
+```bash
+python -m job_apply_bot requeue-runner-failures --run-id <run_id>
+```
+
+## Step-by-Step: Run the Dashboard
+
+The dashboard has two parts:
+
+- a FastAPI server started from Python on port `8000`
+- a Vite frontend started from `frontend/` on port `5173` during development
+
+### Development Mode
+
+Use this while actively working on the dashboard UI.
+
+1. Install the Python dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+2. Install the frontend dependencies:
+
+```bash
+cd frontend
+npm install
+```
+
+3. In one terminal, start the dashboard API server from the repo root:
+
+```bash
+python -m job_apply_bot serve-dashboard --reload
+```
+
+4. In a second terminal, start the Vite frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+5. Open the dashboard in your browser:
+
+```text
+http://127.0.0.1:5173
+```
+
+In development, Vite proxies `/api` requests to `http://127.0.0.1:8000`.
+
+### Built Dashboard Mode
+
+Use this when you want the Python server to serve the built frontend itself.
+
+1. Build the frontend:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+2. Start the dashboard server from the repo root:
+
+```bash
+python -m job_apply_bot serve-dashboard
+```
+
+3. Open the dashboard in your browser:
+
+```text
+http://127.0.0.1:8000
+```
+
+Useful options:
+
+- Change the bind host with `--host`
+- Change the port with `--port`
+- Point at a different SQLite database with `--db-path`
+
 ### Search Site Toggles
 
 Use `APPLICANT_ENABLED_SEARCH_SITES` in `.env` to choose which search sources are active for discovery.

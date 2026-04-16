@@ -10,6 +10,7 @@ import sys
 
 from .db import (
     finish_run,
+    get_resume_customization,
     list_worker_sessions,
     managed_connection,
     prepare_run,
@@ -27,6 +28,7 @@ from .dashboard_models import (
     LiveCounts,
     QueryRow,
     RequeueRunnerFailuresResponse,
+    ResumeCustomizationDetail,
     ResumeInfo,
     RunActionResponse,
     RunAllowedActions,
@@ -227,11 +229,15 @@ def list_jobs(
                 latest_application.status AS latest_application_status,
                 latest_application.applied_at AS latest_applied_at,
                 latest_application.run_id AS latest_application_run_id,
+                latest_application.resume_customization_id AS latest_resume_customization_id,
                 latest_application.resume_path_used AS latest_resume_path_used,
-                latest_application.resume_label_used AS latest_resume_label_used
+                latest_application.resume_label_used AS latest_resume_label_used,
+                latest_resume_customization.created_at AS latest_resume_generated_at
             FROM jobs
             LEFT JOIN latest_application
               ON latest_application.job_key = jobs.job_key
+            LEFT JOIN resume_customizations AS latest_resume_customization
+              ON latest_resume_customization.id = latest_application.resume_customization_id
             {where_sql}
             ORDER BY jobs.last_updated_at DESC, jobs.id DESC
             LIMIT ? OFFSET ?
@@ -273,11 +279,15 @@ def get_job_detail(db_path: Path, *, repo_root: Path, job_key: str) -> JobDetail
                 latest_application.status AS latest_application_status,
                 latest_application.applied_at AS latest_applied_at,
                 latest_application.run_id AS latest_application_run_id,
+                latest_application.resume_customization_id AS latest_resume_customization_id,
                 latest_application.resume_path_used AS latest_resume_path_used,
-                latest_application.resume_label_used AS latest_resume_label_used
+                latest_application.resume_label_used AS latest_resume_label_used,
+                latest_resume_customization.created_at AS latest_resume_generated_at
             FROM jobs
             LEFT JOIN latest_application
               ON latest_application.job_key = jobs.job_key
+            LEFT JOIN resume_customizations AS latest_resume_customization
+              ON latest_resume_customization.id = latest_application.resume_customization_id
             WHERE jobs.job_key = ?
             """,
             (job_key,),
@@ -287,10 +297,15 @@ def get_job_detail(db_path: Path, *, repo_root: Path, job_key: str) -> JobDetail
 
         application_rows = connection.execute(
             """
-            SELECT *
+            SELECT
+                applications.*,
+                resume_customizations.created_at AS resume_generated_at,
+                resume_customizations.rendered_pdf_path AS resume_rendered_pdf_path
             FROM applications
-            WHERE job_key = ?
-            ORDER BY id DESC
+            LEFT JOIN resume_customizations
+              ON resume_customizations.id = applications.resume_customization_id
+            WHERE applications.job_key = ?
+            ORDER BY applications.id DESC
             """,
             (job_key,),
         ).fetchall()
@@ -309,11 +324,25 @@ def get_job_detail(db_path: Path, *, repo_root: Path, job_key: str) -> JobDetail
     return JobDetail(
         **item.model_dump(),
         application_history=[
-            ApplicationRow.model_validate(dict(application_row))
+            _application_row_from_row(dict(application_row))
             for application_row in application_rows
         ],
         findings=[FindingRow.model_validate(dict(finding_row)) for finding_row in finding_rows],
     )
+
+
+def get_resume_customization_detail(
+    db_path: Path, *, customization_id: int
+) -> ResumeCustomizationDetail:
+    row = get_resume_customization(db_path, customization_id=customization_id)
+    if row is None:
+        raise DashboardNotFoundError(
+            f"Resume customization {customization_id} does not exist."
+        )
+    payload = dict(row)
+    payload["preview_url"] = _resume_customization_preview_url(customization_id)
+    payload["download_url"] = _resume_customization_download_url(customization_id)
+    return ResumeCustomizationDetail.model_validate(payload)
 
 
 def start_run_workflow(db_path: Path, *, repo_root: Path) -> RunActionResponse:
@@ -617,12 +646,43 @@ def _job_list_item_from_row(
     )
 
 
+def _application_row_from_row(row: dict[str, object]) -> ApplicationRow:
+    return ApplicationRow(
+        id=int(row["id"]),
+        job_key=str(row["job_key"]),
+        run_id=_normalize_optional_int(row.get("run_id")),
+        applied_at=str(row["applied_at"]),
+        status=str(row["status"]),
+        confirmation_text=_normalize_optional_string(row.get("confirmation_text")),
+        confirmation_url=_normalize_optional_string(row.get("confirmation_url")),
+        resume_path_used=_normalize_optional_string(row.get("resume_path_used")),
+        resume_label_used=_normalize_optional_string(row.get("resume_label_used")),
+        resume_customization_id=_normalize_optional_int(
+            row.get("resume_customization_id")
+        ),
+        resume_info=_application_resume_info_from_row(row),
+        error_message=_normalize_optional_string(row.get("error_message")),
+    )
+
+
 def _resume_info_from_row(
     row: dict[str, object],
     profile_defaults: ProfileResumeDefaults,
 ) -> ResumeInfo:
+    customization_id = _normalize_optional_int(row.get("latest_resume_customization_id"))
     snapshot_path = _normalize_optional_string(row.get("latest_resume_path_used"))
     snapshot_label = _normalize_optional_string(row.get("latest_resume_label_used"))
+    generated_at = _normalize_optional_string(row.get("latest_resume_generated_at"))
+    if customization_id is not None:
+        return ResumeInfo(
+            path=snapshot_path,
+            label=snapshot_label or (Path(snapshot_path).name if snapshot_path else None),
+            source="job_tailored",
+            customization_id=customization_id,
+            generated_at=generated_at,
+            preview_url=_resume_customization_preview_url(customization_id),
+            download_url=_resume_customization_download_url(customization_id),
+        )
     if snapshot_path or snapshot_label:
         return ResumeInfo(
             path=snapshot_path,
@@ -635,6 +695,40 @@ def _resume_info_from_row(
         label=profile_defaults.label,
         source="default_profile",
     )
+
+
+def _application_resume_info_from_row(row: dict[str, object]) -> ResumeInfo | None:
+    customization_id = _normalize_optional_int(row.get("resume_customization_id"))
+    resume_path = _normalize_optional_string(
+        row.get("resume_rendered_pdf_path") or row.get("resume_path_used")
+    )
+    resume_label = _normalize_optional_string(row.get("resume_label_used"))
+    generated_at = _normalize_optional_string(row.get("resume_generated_at"))
+    if customization_id is not None:
+        return ResumeInfo(
+            path=resume_path,
+            label=resume_label or (Path(resume_path).name if resume_path else None),
+            source="job_tailored",
+            customization_id=customization_id,
+            generated_at=generated_at,
+            preview_url=_resume_customization_preview_url(customization_id),
+            download_url=_resume_customization_download_url(customization_id),
+        )
+    if resume_path or resume_label:
+        return ResumeInfo(
+            path=resume_path,
+            label=resume_label or (Path(resume_path).name if resume_path else None),
+            source="application_snapshot",
+        )
+    return None
+
+
+def _resume_customization_preview_url(customization_id: int) -> str:
+    return f"/api/resume-customizations/{customization_id}"
+
+
+def _resume_customization_download_url(customization_id: int) -> str:
+    return f"/api/resume-customizations/{customization_id}/file"
 
 
 def _assert_no_other_active_run(db_path: Path, *, allowed_run_id: int | None = None) -> None:

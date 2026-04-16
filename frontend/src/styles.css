@@ -431,6 +431,15 @@ a {
   border-style: dashed;
 }
 
+.resume-preview {
+  margin: 12px 0 0;
+  white-space: pre-wrap;
+  font-size: 0.84rem;
+  line-height: 1.55;
+  color: var(--text);
+  font-family: "IBM Plex Mono", monospace;
+}
+
 .error-banner {
   margin: 0;
   padding: 14px 18px;

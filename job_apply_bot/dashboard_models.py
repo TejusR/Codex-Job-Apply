@@ -6,13 +6,17 @@ from pydantic import BaseModel
 
 
 RunUiStatus = Literal["running", "needs_resume", "completed", "completed_with_errors"]
-ResumeSource = Literal["application_snapshot", "default_profile"]
+ResumeSource = Literal["job_tailored", "application_snapshot", "default_profile"]
 
 
 class ResumeInfo(BaseModel):
     path: str | None
     label: str | None
     source: ResumeSource
+    customization_id: int | None = None
+    generated_at: str | None = None
+    preview_url: str | None = None
+    download_url: str | None = None
 
 
 class SearchSummary(BaseModel):
@@ -120,7 +124,26 @@ class ApplicationRow(BaseModel):
     confirmation_url: str | None
     resume_path_used: str | None
     resume_label_used: str | None
+    resume_customization_id: int | None = None
+    resume_info: ResumeInfo | None = None
     error_message: str | None
+
+
+class ResumeCustomizationDetail(BaseModel):
+    id: int
+    job_key: str
+    run_id: int | None
+    status: str
+    created_at: str
+    source_template_path: str | None
+    rendered_tex_path: str | None
+    rendered_pdf_path: str | None
+    preview_content: str | None
+    customization_payload_json: str | None
+    compiler: str | None
+    error_message: str | None
+    preview_url: str | None
+    download_url: str | None
 
 
 class FindingRow(BaseModel):

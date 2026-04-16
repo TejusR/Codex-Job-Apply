@@ -12,7 +12,9 @@ from job_apply_bot.db import (
     claim_search_result,
     complete_query,
     ensure_worker_session,
+    get_resume_customization,
     get_query,
+    ingest_job,
     insert_search_results,
     list_search_results,
     prepare_run,
@@ -36,6 +38,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
         *,
         enabled_search_sites: str = "greenhouse",
         discovery_max_pages: int | None = None,
+        include_resume_template: bool = False,
     ) -> None:
         env_lines = [
             "APPLICANT_FULL_NAME=Tejus Ramesh",
@@ -52,6 +55,33 @@ class SupervisorWorkflowTests(unittest.TestCase):
         if discovery_max_pages is not None:
             env_lines.append(f"APPLICANT_DISCOVERY_MAX_PAGES={discovery_max_pages}")
         (root / "resume.pdf").write_text("stub", encoding="utf-8")
+        if include_resume_template:
+            (root / "resume-template.tex").write_text(
+                "\n".join(
+                    (
+                        "\\documentclass{article}",
+                        "\\begin{document}",
+                        "\\begin{itemize}",
+                        "% BEGIN AUTO_SUMMARY",
+                        "\\item Existing summary",
+                        "% END AUTO_SUMMARY",
+                        "\\end{itemize}",
+                        "\\begin{itemize}",
+                        "% BEGIN AUTO_SKILLS",
+                        "\\item Existing skills",
+                        "% END AUTO_SKILLS",
+                        "\\end{itemize}",
+                        "\\begin{itemize}",
+                        "% BEGIN AUTO_BULLETS:experience",
+                        "\\item Existing experience",
+                        "% END AUTO_BULLETS:experience",
+                        "\\end{itemize}",
+                        "\\end{document}",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            env_lines.append("APPLICANT_RESUME_TEMPLATE_PATH=resume-template.tex")
         (root / ".env").write_text(
             "\n".join(env_lines),
             encoding="utf-8",
@@ -127,6 +157,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
         company: str = "Acme",
         location: str = "Remote, United States",
         posted_at: str = "2 hours ago",
+        description_text: str = "Backend role focused on APIs and distributed systems.",
     ) -> dict[str, object]:
         return {
             "outcome": "resolved_job",
@@ -138,6 +169,7 @@ class SupervisorWorkflowTests(unittest.TestCase):
                 "company": company,
                 "location": location,
                 "posted_at": posted_at,
+                "description_text": description_text,
                 "page_url": raw_url,
             },
             "child_results": [],
@@ -479,6 +511,139 @@ class SupervisorWorkflowTests(unittest.TestCase):
             )
             drained = workflow_status(db_path, run_id=run_id)
             self.assertTrue(drained["drained"])
+
+    def test_apply_job_with_codex_generates_and_uses_tailored_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, include_resume_template=True)
+            run = start_run(db_path)
+            run_id = int(run["id"])
+            job = ingest_job(
+                db_path,
+                run_id=run_id,
+                raw_url="https://boards.greenhouse.io/acme/jobs/1",
+                canonical_url=None,
+                source=None,
+                title="Software Engineer",
+                company="Acme",
+                location="Remote, United States",
+                posted_at="2 hours ago",
+                discovered_at="2026-04-10T00:00:00Z",
+                role_keywords=[],
+                allowed_locations=[],
+                description_text="Backend-heavy role building APIs and distributed systems.",
+            )
+            calls: list[dict[str, object]] = []
+            steps = [
+                {
+                    "expected_schema": "CODEX_RESUME_CUSTOMIZER_SCHEMA.json",
+                    "write_json": {
+                        "summary": [
+                            "Backend-focused software engineer experienced in Spring Boot and distributed systems."
+                        ],
+                        "skills": [
+                            "Programming: Java, TypeScript, Python, Scala, SQL"
+                        ],
+                        "bullet_blocks": [
+                            {
+                                "slug": "experience",
+                                "bullets": [
+                                    "Built production backend systems and APIs in Spring Boot."
+                                ]
+                            }
+                        ]
+                    }
+                },
+                {
+                    "expected_schema": "CODEX_APPLY_WORKER_SCHEMA.json",
+                    "write_json": self._apply_result("submitted")
+                }
+            ]
+
+            def fake_compile_latex_resume(
+                *,
+                tex_path: Path,
+                output_dir: Path,
+            ) -> tuple[Path, str]:
+                pdf_path = output_dir / f"{tex_path.stem}.pdf"
+                pdf_path.write_text("pdf-stub", encoding="utf-8")
+                return pdf_path, "pdflatex"
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, calls),
+            ), patch(
+                "job_apply_bot.supervisor.compile_latex_resume",
+                side_effect=fake_compile_latex_resume,
+            ):
+                result = apply_job_with_codex(
+                    db_path,
+                    repo_root=root,
+                    run_id=run_id,
+                    job_key=job.job_key,
+                )
+
+            self.assertEqual(result["application"]["status"], "submitted")
+            self.assertTrue(
+                str(result["application"]["resume_path_used"]).endswith("resume.pdf")
+            )
+            customization_id = int(result["application"]["resume_customization_id"])
+            customization = get_resume_customization(
+                db_path,
+                customization_id=customization_id,
+            )
+            self.assertIsNotNone(customization)
+            self.assertEqual(customization["status"], "succeeded")
+            self.assertIn("Backend-focused", str(customization["preview_content"]))
+            self.assertIn('"description_text"', calls[0]["prompt"])
+
+    def test_apply_job_with_codex_records_failed_application_when_resume_customization_fails(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+            self._write_valid_profile(root, include_resume_template=True)
+            run = start_run(db_path)
+            run_id = int(run["id"])
+            job = ingest_job(
+                db_path,
+                run_id=run_id,
+                raw_url="https://boards.greenhouse.io/acme/jobs/1",
+                canonical_url=None,
+                source=None,
+                title="Software Engineer",
+                company="Acme",
+                location="Remote, United States",
+                posted_at="2 hours ago",
+                discovered_at="2026-04-10T00:00:00Z",
+                role_keywords=[],
+                allowed_locations=[],
+                description_text="Backend-heavy role building APIs and distributed systems.",
+            )
+            steps = [
+                {
+                    "expected_schema": "CODEX_RESUME_CUSTOMIZER_SCHEMA.json",
+                    "returncode": 1,
+                    "stderr": "customizer failed"
+                }
+            ]
+
+            with patch(
+                "job_apply_bot.supervisor.subprocess.run",
+                side_effect=self._make_fake_codex_runner(steps, []),
+            ):
+                result = apply_job_with_codex(
+                    db_path,
+                    repo_root=root,
+                    run_id=run_id,
+                    job_key=job.job_key,
+                    max_worker_retries=0,
+                )
+
+            self.assertEqual(result["application"]["status"], "failed")
+            self.assertEqual(result["findings"][0]["category"], "resume_customization")
 
     def test_run_workflow_pipelines_query_results_listing_expansion_and_apply(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

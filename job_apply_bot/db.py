@@ -50,6 +50,7 @@ SCHEMA_STATEMENTS = (
       company TEXT,
       location TEXT,
       posted_at TEXT,
+      description_text TEXT,
       discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
       status TEXT NOT NULL DEFAULT 'discovered',
       status_reason TEXT,
@@ -65,10 +66,12 @@ SCHEMA_STATEMENTS = (
       status TEXT NOT NULL,
       confirmation_text TEXT,
       confirmation_url TEXT,
+      resume_customization_id INTEGER,
       resume_path_used TEXT,
       resume_label_used TEXT,
       error_message TEXT,
       FOREIGN KEY (job_key) REFERENCES jobs(job_key),
+      FOREIGN KEY (resume_customization_id) REFERENCES resume_customizations(id),
       FOREIGN KEY (run_id) REFERENCES runs(id)
     );
     """,
@@ -188,9 +191,29 @@ SCHEMA_STATEMENTS = (
       UNIQUE(run_id, worker_type, slot_key)
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS resume_customizations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_key TEXT NOT NULL,
+      run_id INTEGER,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      source_template_path TEXT,
+      job_description_hash TEXT,
+      rendered_tex_path TEXT,
+      rendered_pdf_path TEXT,
+      preview_content TEXT,
+      customization_payload_json TEXT,
+      compiler TEXT,
+      error_message TEXT,
+      FOREIGN KEY (job_key) REFERENCES jobs(job_key),
+      FOREIGN KEY (run_id) REFERENCES runs(id)
+    );
+    """,
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
     "CREATE INDEX IF NOT EXISTS idx_jobs_posted_at ON jobs(posted_at);",
     "CREATE INDEX IF NOT EXISTS idx_applications_job_key ON applications(job_key);",
+    "CREATE INDEX IF NOT EXISTS idx_applications_resume_customization_id ON applications(resume_customization_id);",
     "CREATE INDEX IF NOT EXISTS idx_application_findings_run_id ON application_findings(run_id);",
     "CREATE INDEX IF NOT EXISTS idx_application_findings_job_key ON application_findings(job_key);",
     "CREATE INDEX IF NOT EXISTS idx_run_search_queries_run_status ON run_search_queries(run_id, status);",
@@ -199,6 +222,7 @@ SCHEMA_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_codex_worker_attempts_run_target ON codex_worker_attempts(run_id, worker_type, target_key);",
     "CREATE INDEX IF NOT EXISTS idx_run_query_skipped_results_run_source ON run_query_skipped_results(run_id, source_key);",
     "CREATE INDEX IF NOT EXISTS idx_codex_worker_sessions_run_type_status ON codex_worker_sessions(run_id, worker_type, status);",
+    "CREATE INDEX IF NOT EXISTS idx_resume_customizations_job_created ON resume_customizations(job_key, created_at DESC);",
 )
 
 
@@ -253,8 +277,10 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         for statement in SCHEMA_STATEMENTS:
             connection.execute(statement)
         _ensure_column(connection, "applications", "run_id", "INTEGER")
+        _ensure_column(connection, "applications", "resume_customization_id", "INTEGER")
         _ensure_column(connection, "applications", "resume_path_used", "TEXT")
         _ensure_column(connection, "applications", "resume_label_used", "TEXT")
+        _ensure_column(connection, "jobs", "description_text", "TEXT")
         _ensure_column(connection, "run_search_queries", "cursor_json", "TEXT")
 
 
@@ -343,6 +369,7 @@ def ingest_job(
     discovered_at: str | None,
     role_keywords: list[str] | None,
     allowed_locations: list[str] | None,
+    description_text: str | None = None,
     allow_unverifiable_freshness: bool = False,
 ) -> IngestResult:
     canonical = canonicalize_url(raw_url, canonical_url)
@@ -396,6 +423,7 @@ def ingest_job(
                 company=company,
                 location=location,
                 posted_at=freshness.normalized_posted_at,
+                description_text=description_text,
                 discovered_at=discovered_value,
                 status="skipped_unverifiable_date",
                 status_reason=freshness.reason,
@@ -421,6 +449,7 @@ def ingest_job(
                 company=company,
                 location=location,
                 posted_at=freshness.normalized_posted_at,
+                description_text=description_text,
                 discovered_at=discovered_value,
                 status="filtered_out_old",
                 status_reason=freshness.reason,
@@ -447,6 +476,7 @@ def ingest_job(
                 company=company,
                 location=location,
                 posted_at=freshness.normalized_posted_at,
+                description_text=description_text,
                 discovered_at=discovered_value,
                 status="discovered",
                 status_reason="filtered_out_role",
@@ -472,6 +502,7 @@ def ingest_job(
                 company=company,
                 location=location,
                 posted_at=freshness.normalized_posted_at,
+                description_text=description_text,
                 discovered_at=discovered_value,
                 status="discovered",
                 status_reason="filtered_out_location",
@@ -501,6 +532,7 @@ def ingest_job(
             company=company,
             location=location,
             posted_at=freshness.normalized_posted_at,
+            description_text=description_text,
             discovered_at=discovered_value,
             status="ready_to_apply",
             status_reason=ready_status_reason,
@@ -1025,6 +1057,179 @@ def get_job(db_path: Path, *, job_key: str) -> dict[str, object] | None:
             "SELECT * FROM jobs WHERE job_key = ?", (job_key,)
         ).fetchone()
     return dict(row) if row is not None else None
+
+
+def create_resume_customization(
+    db_path: Path,
+    *,
+    job_key: str,
+    run_id: int | None,
+    status: str,
+    source_template_path: str | None,
+    job_description_hash: str | None,
+    rendered_tex_path: str | None = None,
+    rendered_pdf_path: str | None = None,
+    preview_content: str | None = None,
+    customization_payload_json: str | None = None,
+    compiler: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, object]:
+    created_at = format_timestamp(utc_now())
+    with managed_connection(db_path) as connection:
+        job = connection.execute(
+            "SELECT job_key FROM jobs WHERE job_key = ?", (job_key,)
+        ).fetchone()
+        if job is None:
+            raise ValueError(f"Job {job_key} does not exist.")
+        if run_id is not None:
+            run = connection.execute("SELECT id FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if run is None:
+                raise ValueError(f"Run {run_id} does not exist.")
+
+        connection.execute(
+            """
+            INSERT INTO resume_customizations (
+                job_key, run_id, status, created_at, source_template_path,
+                job_description_hash, rendered_tex_path, rendered_pdf_path, preview_content,
+                customization_payload_json, compiler, error_message
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_key,
+                run_id,
+                status,
+                created_at,
+                _normalize_optional_string(source_template_path),
+                _normalize_optional_string(job_description_hash),
+                _normalize_optional_string(rendered_tex_path),
+                _normalize_optional_string(rendered_pdf_path),
+                _normalize_optional_string(preview_content),
+                _normalize_optional_string(customization_payload_json),
+                _normalize_optional_string(compiler),
+                _normalize_optional_string(error_message),
+            ),
+        )
+        row = connection.execute(
+            """
+            SELECT *
+            FROM resume_customizations
+            WHERE rowid = last_insert_rowid()
+            """
+        ).fetchone()
+    return dict(row) if row is not None else {"job_key": job_key}
+
+
+def update_resume_customization(
+    db_path: Path,
+    *,
+    customization_id: int,
+    status: str,
+    rendered_tex_path: str | None = None,
+    rendered_pdf_path: str | None = None,
+    preview_content: str | None = None,
+    customization_payload_json: str | None = None,
+    compiler: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, object]:
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM resume_customizations WHERE id = ?",
+            (customization_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Resume customization {customization_id} does not exist.")
+
+        connection.execute(
+            """
+            UPDATE resume_customizations
+            SET status = ?,
+                rendered_tex_path = COALESCE(?, rendered_tex_path),
+                rendered_pdf_path = COALESCE(?, rendered_pdf_path),
+                preview_content = COALESCE(?, preview_content),
+                customization_payload_json = COALESCE(?, customization_payload_json),
+                compiler = COALESCE(?, compiler),
+                error_message = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                _normalize_optional_string(rendered_tex_path),
+                _normalize_optional_string(rendered_pdf_path),
+                _normalize_optional_string(preview_content),
+                _normalize_optional_string(customization_payload_json),
+                _normalize_optional_string(compiler),
+                _normalize_optional_string(error_message),
+                customization_id,
+            ),
+        )
+        updated = connection.execute(
+            "SELECT * FROM resume_customizations WHERE id = ?",
+            (customization_id,),
+        ).fetchone()
+    return dict(updated) if updated is not None else {"id": customization_id}
+
+
+def get_resume_customization(
+    db_path: Path, *, customization_id: int
+) -> dict[str, object] | None:
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM resume_customizations WHERE id = ?",
+            (customization_id,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def find_latest_resume_customization(
+    db_path: Path,
+    *,
+    job_key: str,
+    status: str | None = None,
+    source_template_path: str | None = None,
+    job_description_hash: str | None = None,
+) -> dict[str, object] | None:
+    filters = ["job_key = ?"]
+    params: list[object] = [job_key]
+    if status is not None:
+        filters.append("status = ?")
+        params.append(status)
+    if source_template_path is not None:
+        filters.append("source_template_path = ?")
+        params.append(source_template_path)
+    if job_description_hash is not None:
+        filters.append("job_description_hash = ?")
+        params.append(job_description_hash)
+
+    where_sql = " AND ".join(filters)
+    with managed_connection(db_path) as connection:
+        row = connection.execute(
+            f"""
+            SELECT *
+            FROM resume_customizations
+            WHERE {where_sql}
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            tuple(params),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_resume_customizations_for_job(
+    db_path: Path, *, job_key: str
+) -> list[dict[str, object]]:
+    with managed_connection(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM resume_customizations
+            WHERE job_key = ?
+            ORDER BY id DESC
+            """,
+            (job_key,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_query(db_path: Path, *, run_id: int, source_key: str) -> dict[str, object] | None:
@@ -1553,6 +1758,7 @@ def record_application(
     confirmation_url: str | None,
     error_message: str | None,
     run_id: int | None,
+    resume_customization_id: int | None = None,
     resume_path_used: str | None = None,
     resume_label_used: str | None = None,
 ) -> dict[str, object]:
@@ -1577,9 +1783,9 @@ def record_application(
             """
             INSERT INTO applications (
                 job_key, applied_at, run_id, status, confirmation_text, confirmation_url,
-                resume_path_used, resume_label_used, error_message
+                resume_customization_id, resume_path_used, resume_label_used, error_message
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_key,
@@ -1588,6 +1794,7 @@ def record_application(
                 status,
                 confirmation_text,
                 confirmation_url,
+                resume_customization_id,
                 _normalize_optional_string(resume_path_used),
                 _normalize_optional_string(resume_label_used),
                 error_message,
@@ -1853,6 +2060,7 @@ def _upsert_job(
     company: str | None,
     location: str | None,
     posted_at: str | None,
+    description_text: str | None,
     discovered_at: str,
     status: str,
     status_reason: str | None,
@@ -1861,9 +2069,9 @@ def _upsert_job(
         """
         INSERT INTO jobs (
             job_key, canonical_url, raw_url, source, title, company, location,
-            posted_at, discovered_at, status, status_reason, last_updated_at
+            posted_at, description_text, discovered_at, status, status_reason, last_updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(job_key) DO UPDATE SET
             canonical_url = excluded.canonical_url,
             raw_url = excluded.raw_url,
@@ -1872,6 +2080,7 @@ def _upsert_job(
             company = excluded.company,
             location = excluded.location,
             posted_at = excluded.posted_at,
+            description_text = COALESCE(excluded.description_text, jobs.description_text),
             discovered_at = excluded.discovered_at,
             status = excluded.status,
             status_reason = excluded.status_reason,
@@ -1886,6 +2095,7 @@ def _upsert_job(
             company,
             location,
             posted_at,
+            _normalize_optional_string(description_text),
             discovered_at,
             status,
             status_reason,

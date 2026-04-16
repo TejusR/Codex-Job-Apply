@@ -5,6 +5,9 @@
 applicant.md
 !applicant.md.example
 resume/
+!resume/
+resume/*
+!resume/master_resume.tex
 
 # Local workflow state and artifacts
 data/

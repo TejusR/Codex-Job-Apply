@@ -65,6 +65,73 @@ class ValidateProfileTests(unittest.TestCase):
 
             self.assertEqual(payload["profile"]["discovery_max_pages"], 7)
 
+    def test_resume_template_path_is_surfaced_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "resume.pdf").write_text("stub", encoding="utf-8")
+            (root / "resume-template.tex").write_text(
+                "% BEGIN AUTO_SUMMARY\n% END AUTO_SUMMARY\n% BEGIN AUTO_SKILLS\n% END AUTO_SKILLS\n% BEGIN AUTO_BULLETS:example\n% END AUTO_BULLETS:example\n",
+                encoding="utf-8",
+            )
+            (root / ".env").write_text(
+                textwrap.dedent(
+                    """
+                    APPLICANT_FULL_NAME=Tejus Ramesh
+                    APPLICANT_EMAIL=rameshtejus@gmail.com
+                    APPLICANT_PHONE=(480)-810-7760
+                    APPLICANT_LOCATION=Tempe, AZ
+                    APPLICANT_RESUME_PATH=resume.pdf
+                    APPLICANT_RESUME_TEMPLATE_PATH=resume-template.tex
+                    APPLICANT_US_WORK_AUTHORIZED=true
+                    APPLICANT_REQUIRES_VISA_SPONSORSHIP=false
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            (root / "applicant.md").write_text(
+                "# Applicant Details\n\n## Work Authorization Notes\nProvided\n\n## Reusable Highlights\nProvided\n",
+                encoding="utf-8",
+            )
+
+            payload = validate_profile(root).to_dict()
+
+            self.assertEqual(
+                payload["profile"]["resume_template_path"],
+                str((root / "resume-template.tex").resolve()),
+            )
+
+    def test_missing_resume_template_path_warns_without_failing_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "resume.pdf").write_text("stub", encoding="utf-8")
+            (root / ".env").write_text(
+                textwrap.dedent(
+                    """
+                    APPLICANT_FULL_NAME=Tejus Ramesh
+                    APPLICANT_EMAIL=rameshtejus@gmail.com
+                    APPLICANT_PHONE=(480)-810-7760
+                    APPLICANT_LOCATION=Tempe, AZ
+                    APPLICANT_RESUME_PATH=resume.pdf
+                    APPLICANT_RESUME_TEMPLATE_PATH=missing-template.tex
+                    APPLICANT_US_WORK_AUTHORIZED=true
+                    APPLICANT_REQUIRES_VISA_SPONSORSHIP=false
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+            (root / "applicant.md").write_text(
+                "# Applicant Details\n\n## Work Authorization Notes\nProvided\n\n## Reusable Highlights\nProvided\n",
+                encoding="utf-8",
+            )
+
+            result = validate_profile(root)
+
+            self.assertTrue(result.ok)
+            self.assertIn(
+                "APPLICANT_RESUME_TEMPLATE_PATH points to a missing file.",
+                result.warnings,
+            )
+
     def test_invalid_discovery_max_pages_warns_and_falls_back_to_default(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

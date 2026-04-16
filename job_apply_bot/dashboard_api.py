@@ -13,6 +13,7 @@ from .dashboard_models import (
     JobDetail,
     JobListResponse,
     RequeueRunnerFailuresResponse,
+    ResumeCustomizationDetail,
     RunActionResponse,
     RunDetail,
     RunsResponse,
@@ -23,6 +24,7 @@ from .dashboard_service import (
     DashboardNotFoundError,
     finish_run_from_dashboard,
     get_job_detail,
+    get_resume_customization_detail,
     get_run_detail,
     list_jobs,
     list_runs_overview,
@@ -138,6 +140,38 @@ def create_app(
                 repo_root=resolved_repo_root,
                 job_key=job_key,
             )
+        )
+
+    @app.get(
+        "/api/resume-customizations/{customization_id}",
+        response_model=ResumeCustomizationDetail,
+    )
+    def get_resume_customization(customization_id: int) -> ResumeCustomizationDetail:
+        return _handle_dashboard_call(
+            lambda: get_resume_customization_detail(
+                resolved_db_path,
+                customization_id=customization_id,
+            )
+        )
+
+    @app.get("/api/resume-customizations/{customization_id}/file")
+    def download_resume_customization_file(customization_id: int) -> FileResponse:
+        detail = _handle_dashboard_call(
+            lambda: get_resume_customization_detail(
+                resolved_db_path,
+                customization_id=customization_id,
+            )
+        )
+        pdf_path = Path(detail.rendered_pdf_path) if detail.rendered_pdf_path else None
+        if pdf_path is None or not pdf_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Rendered resume file for customization {customization_id} was not found.",
+            )
+        return FileResponse(
+            pdf_path,
+            filename=pdf_path.name,
+            media_type="application/pdf",
         )
 
     _mount_frontend(app, repo_root=resolved_repo_root)

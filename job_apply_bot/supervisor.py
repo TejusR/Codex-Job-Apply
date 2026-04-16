@@ -19,11 +19,14 @@ from .db import (
     fail_query,
     finish_run,
     finish_worker_attempt,
+    find_latest_resume_customization,
     get_job,
     get_query,
+    get_resume_customization,
     increment_query_jobs_ingested,
     ingest_job,
     insert_search_results,
+    list_resume_customizations_for_job,
     list_run_queries,
     list_run_seen_urls,
     mark_job_applying,
@@ -34,8 +37,10 @@ from .db import (
     requeue_processing_search_results,
     requeue_stale_applying_jobs,
     reset_worker_sessions,
+    create_resume_customization,
     start_worker_attempt,
     update_search_result_status,
+    update_resume_customization,
     update_worker_session,
     workflow_status,
 )
@@ -45,14 +50,25 @@ from .profile import (
     parse_applicant_markdown,
     validate_profile,
 )
+from .resume_customization import (
+    ResumeCustomizationError,
+    build_preview_content,
+    compile_latex_resume,
+    job_description_hash,
+    parse_resume_template,
+    render_customized_resume,
+    validate_customization_payload,
+)
 
 PROMPTS_DIR = Path(__file__).resolve().parents[1] / "PROMPTS"
 QUERY_WORKER_PROMPT_PATH = PROMPTS_DIR / "CODEX_QUERY_WORKER_PROMPT.md"
 RESOLVE_WORKER_PROMPT_PATH = PROMPTS_DIR / "CODEX_RESOLVE_WORKER_PROMPT.md"
 APPLY_WORKER_PROMPT_PATH = PROMPTS_DIR / "CODEX_APPLY_WORKER_PROMPT.md"
+RESUME_CUSTOMIZER_PROMPT_PATH = PROMPTS_DIR / "CODEX_RESUME_CUSTOMIZER_PROMPT.md"
 QUERY_WORKER_SCHEMA_PATH = PROMPTS_DIR / "CODEX_QUERY_WORKER_SCHEMA.json"
 RESOLVE_WORKER_SCHEMA_PATH = PROMPTS_DIR / "CODEX_RESOLVE_WORKER_SCHEMA.json"
 APPLY_WORKER_SCHEMA_PATH = PROMPTS_DIR / "CODEX_APPLY_WORKER_SCHEMA.json"
+RESUME_CUSTOMIZER_SCHEMA_PATH = PROMPTS_DIR / "CODEX_RESUME_CUSTOMIZER_SCHEMA.json"
 
 
 def _default_codex_bin() -> str:
@@ -621,6 +637,7 @@ def _process_search_result(
         company=_as_nullable_string(job_payload.get("company")),
         location=_as_nullable_string(job_payload.get("location")),
         posted_at=_as_nullable_string(job_payload.get("posted_at")),
+        description_text=_as_nullable_string(job_payload.get("description_text")),
         discovered_at=None,
         role_keywords=_coerce_string_list(profile_payload.get("target_role_keywords")),
         allowed_locations=_coerce_string_list(profile_payload.get("allowed_locations")),
@@ -721,11 +738,66 @@ def _apply_existing_job(
     validation: ProfileValidationResult,
 ) -> dict[str, object]:
     job_key = str(job["job_key"])
-    resume_path_used, resume_label_used = _resume_snapshot_from_validation(validation)
+    profile_payload = validation.to_dict().get("profile", {})
+    if not isinstance(profile_payload, dict):
+        profile_payload = {}
+
+    try:
+        resume_customization = _ensure_job_resume_customization(
+            config,
+            run_id=run_id,
+            slot_key=slot_key,
+            job=job,
+            validation=validation,
+        )
+    except ResumeCustomizationError as exc:
+        error_message = str(exc)
+        customization_id = _resume_customization_id_from_error(exc)
+        application = record_application(
+            config.db_path,
+            job_key=job_key,
+            status="failed",
+            confirmation_text=None,
+            confirmation_url=str(job.get("canonical_url") or job.get("raw_url") or ""),
+            error_message=error_message,
+            run_id=run_id,
+            resume_customization_id=customization_id,
+            resume_path_used=None,
+            resume_label_used=None,
+        )
+        finding = record_finding(
+            config.db_path,
+            job_key=job_key,
+            run_id=run_id,
+            application_status="failed",
+            stage="resume",
+            category="resume_customization",
+            summary="Failed to generate a tailored resume for this job",
+            detail=error_message,
+            page_url=str(job.get("canonical_url") or job.get("raw_url") or ""),
+        )
+        return {
+            "worker_result": {
+                "application_status": "failed",
+                "confirmation_text": None,
+                "confirmation_url": None,
+                "error_message": error_message,
+                "findings": [finding],
+            },
+            "application": application,
+            "findings": [finding],
+        }
+    if resume_customization is not None:
+        profile_payload = dict(profile_payload)
+        profile_payload["resume_path"] = _normalize_optional_string(
+            resume_customization.get("rendered_pdf_path")
+        )
+    resume_path_used = _normalize_optional_string(profile_payload.get("resume_path"))
+    resume_label_used = Path(resume_path_used).name if resume_path_used else None
     runtime_context = _build_apply_worker_context(
         config.repo_root,
-        validation,
-        job,
+        profile_payload=profile_payload,
+        job=job,
     )
 
     try:
@@ -752,6 +824,7 @@ def _apply_existing_job(
             confirmation_url=str(job.get("canonical_url") or job.get("raw_url") or ""),
             error_message=error_message,
             run_id=run_id,
+            resume_customization_id=_resume_customization_row_id(resume_customization),
             resume_path_used=resume_path_used,
             resume_label_used=resume_label_used,
         )
@@ -800,6 +873,7 @@ def _apply_existing_job(
         confirmation_url=_as_nullable_string(payload.get("confirmation_url")),
         error_message=_as_nullable_string(payload.get("error_message")),
         run_id=run_id,
+        resume_customization_id=_resume_customization_row_id(resume_customization),
         resume_path_used=resume_path_used,
         resume_label_used=resume_label_used,
     )
@@ -863,6 +937,205 @@ def _resume_snapshot_from_validation(
     resume_path = _normalize_optional_string(profile.get("resume_path"))
     resume_label = Path(resume_path).name if resume_path else None
     return resume_path, resume_label
+
+
+def _ensure_job_resume_customization(
+    config: WorkerConfig,
+    *,
+    run_id: int,
+    slot_key: str,
+    job: dict[str, object],
+    validation: ProfileValidationResult,
+) -> dict[str, object] | None:
+    profile = validation.to_dict().get("profile", {})
+    if not isinstance(profile, dict):
+        return None
+
+    template_path_value = _normalize_optional_string(profile.get("resume_template_path"))
+    if template_path_value is None:
+        return None
+
+    template_path = Path(template_path_value)
+    if not template_path.exists():
+        raise ResumeCustomizationError(
+            f"Resume template path does not exist: {template_path}"
+        )
+
+    description_hash = job_description_hash(_as_nullable_string(job.get("description_text")))
+    existing = find_latest_resume_customization(
+        config.db_path,
+        job_key=str(job["job_key"]),
+        status="succeeded",
+        source_template_path=str(template_path),
+        job_description_hash=description_hash,
+    )
+    if existing is not None:
+        pdf_path = _normalize_optional_string(existing.get("rendered_pdf_path"))
+        if pdf_path and Path(pdf_path).exists():
+            return existing
+
+    template = parse_resume_template(template_path)
+    version = len(
+        list_resume_customizations_for_job(config.db_path, job_key=str(job["job_key"]))
+    ) + 1
+    output_dir = (
+        config.db_path.resolve().parent
+        / "resume_customizations"
+        / str(job["job_key"])
+        / f"v{version}"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    customization = create_resume_customization(
+        config.db_path,
+        job_key=str(job["job_key"]),
+        run_id=run_id,
+        status="running",
+        source_template_path=str(template_path),
+        job_description_hash=description_hash,
+    )
+    customization_id = int(customization["id"])
+
+    runtime_context = _build_resume_customization_context(
+        template=template,
+        validation=validation,
+        job=job,
+    )
+
+    try:
+        invocation = _invoke_codex_session_turn(
+            config,
+            run_id=run_id,
+            session_worker_type="resume",
+            slot_key=f"{slot_key}-{_safe_filename(str(job['job_key']))}",
+            worker_type="resume_customization",
+            target_key=str(job["job_key"]),
+            schema_path=RESUME_CUSTOMIZER_SCHEMA_PATH,
+            runtime_context=runtime_context,
+            prompt_template_path=RESUME_CUSTOMIZER_PROMPT_PATH,
+            timeout_seconds=config.job_timeout_seconds,
+            validator=lambda payload: validate_customization_payload(
+                payload,
+                template=template,
+            ),
+        )
+    except WorkerExecutionError as exc:
+        update_resume_customization(
+            config.db_path,
+            customization_id=customization_id,
+            status="failed",
+            error_message=str(exc),
+        )
+        wrapped_error = ResumeCustomizationError(str(exc))
+        _attach_resume_customization_id(wrapped_error, customization_id)
+        raise wrapped_error from exc
+
+    payload = invocation.payload
+    rendered_tex = render_customized_resume(template, payload)
+    tex_path = output_dir / "resume.tex"
+    tex_path.write_text(rendered_tex, encoding="utf-8")
+
+    try:
+        pdf_path, compiler = compile_latex_resume(tex_path=tex_path, output_dir=output_dir)
+    except ResumeCustomizationError as exc:
+        update_resume_customization(
+            config.db_path,
+            customization_id=customization_id,
+            status="failed",
+            rendered_tex_path=str(tex_path),
+            customization_payload_json=_dump_json(payload),
+            error_message=str(exc),
+        )
+        _attach_resume_customization_id(exc, customization_id)
+        raise
+
+    preview_content = build_preview_content(
+        payload=payload,
+        job_title=_as_nullable_string(job.get("title")),
+        company=_as_nullable_string(job.get("company")),
+    )
+    update_resume_customization(
+        config.db_path,
+        customization_id=customization_id,
+        status="succeeded",
+        rendered_tex_path=str(tex_path),
+        rendered_pdf_path=str(pdf_path),
+        preview_content=preview_content,
+        customization_payload_json=_dump_json(payload),
+        compiler=compiler,
+        error_message=None,
+    )
+    completed = get_resume_customization(
+        config.db_path,
+        customization_id=customization_id,
+    )
+    if completed is None:
+        raise ResumeCustomizationError(
+            f"Resume customization {customization_id} could not be reloaded after creation."
+        )
+    return completed
+
+
+def _build_resume_customization_context(
+    *,
+    template: object,
+    validation: ProfileValidationResult,
+    job: dict[str, object],
+) -> dict[str, object]:
+    if not hasattr(template, "bullet_slugs"):
+        raise ResumeCustomizationError("Resume template metadata is unavailable.")
+    applicant_notes = parse_applicant_markdown(validation.applicant_md_path)
+    return {
+        "job": {
+            "job_key": job.get("job_key"),
+            "title": job.get("title"),
+            "company": job.get("company"),
+            "location": job.get("location"),
+            "description_text": job.get("description_text"),
+            "canonical_url": job.get("canonical_url"),
+        },
+        "profile": validation.to_dict().get("profile"),
+        "applicant_sections": applicant_notes.sections,
+        "template_contract": {
+            "summary_block": "AUTO_SUMMARY",
+            "skills_block": "AUTO_SKILLS",
+            "bullet_block_slugs": list(template.bullet_slugs),
+            "immutability_rules": [
+                "Do not change employers, job titles, dates, schools, degrees, or locations.",
+                "Only customize summary, skills, and marked bullet blocks.",
+                "Keep every claim grounded in the existing resume facts and applicant notes.",
+            ],
+        },
+    }
+
+
+def _attach_resume_customization_id(
+    error: Exception,
+    customization_id: int,
+) -> None:
+    setattr(error, "resume_customization_id", customization_id)
+
+
+def _resume_customization_id_from_error(error: Exception) -> int | None:
+    value = getattr(error, "resume_customization_id", None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resume_customization_row_id(
+    resume_customization: dict[str, object] | None,
+) -> int | None:
+    if not resume_customization:
+        return None
+    value = resume_customization.get("id")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_discovery_workers(
@@ -1341,7 +1614,8 @@ def _build_resolve_worker_context(
 
 def _build_apply_worker_context(
     repo_root: Path,
-    validation: ProfileValidationResult,
+    *,
+    profile_payload: dict[str, object],
     job: dict[str, object],
 ) -> dict[str, object]:
     applicant_notes = parse_applicant_markdown(repo_root / "applicant.md")
@@ -1354,7 +1628,7 @@ def _build_apply_worker_context(
             "env": str(repo_root / ".env"),
             "applicant_md": str(repo_root / "applicant.md"),
         },
-        "profile": validation.to_dict()["profile"],
+        "profile": profile_payload,
         "job": job,
         "applicant_sections": applicant_notes.sections,
         "allowed_application_statuses": [
@@ -1813,6 +2087,7 @@ def _validate_candidate_payload(payload: object) -> None:
         "company",
         "location",
         "posted_at",
+        "description_text",
         "page_url",
     ):
         if field_name not in payload:
@@ -1820,7 +2095,14 @@ def _validate_candidate_payload(payload: object) -> None:
     _require_non_empty_string(payload, "raw_url")
     _require_non_empty_string(payload, "source")
     _require_non_empty_string(payload, "page_url")
-    for field_name in ("canonical_url", "title", "company", "location", "posted_at"):
+    for field_name in (
+        "canonical_url",
+        "title",
+        "company",
+        "location",
+        "posted_at",
+        "description_text",
+    ):
         _require_nullable_string(payload, field_name)
 
 

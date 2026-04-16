@@ -58,6 +58,12 @@
             "null"
           ]
         },
+        "description_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "page_url": {
           "type": "string",
           "minLength": 1
@@ -71,6 +77,7 @@
         "company",
         "location",
         "posted_at",
+        "description_text",
         "page_url"
       ]
     },

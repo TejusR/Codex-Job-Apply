@@ -1,0 +1,99 @@
+\documentclass[10pt]{article}
+\usepackage[margin=0.55in]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0pt}
+\pagenumbering{gobble}
+\setlist[itemize]{leftmargin=1.2em, itemsep=0.22em, topsep=0.18em}
+
+\newcommand{\resumeSection}[1]{{\large\textbf{#1}}\par\vspace{0.18em}\hrule\vspace{0.4em}}
+\newcommand{\resumeEntry}[4]{
+  \textbf{#1} \hfill #2 \\
+  #3 \hfill #4 \\
+}
+
+\begin{document}
+
+\begin{center}
+{\LARGE\textbf{Tejus Ramesh}} \\
+Tempe, AZ \textbar{} Open to Relocation \textbar{} rameshtejus@gmail.com \textbar{} (480)-810-7760 \textbar{} \href{https://www.linkedin.com}{LinkedIn} \textbar{} \href{https://github.com}{Github}
+\end{center}
+
+\vspace{0.35em}
+\resumeSection{Summary}
+\begin{itemize}
+% BEGIN AUTO_SUMMARY
+\item Software engineer with experience shipping backend services, AI-enabled workflows, data pipelines, and full-stack internal tools in regulated environments.
+\item Strongest production experience spans Java, Spring Boot, React, TypeScript, Spark, Elasticsearch, Neo4j, and applied LLM systems.
+\item Interested in backend, full-stack, and applied AI roles across high-impact product and platform teams.
+% END AUTO_SUMMARY
+\end{itemize}
+
+\resumeSection{Education}
+\resumeEntry{Arizona State University}{Tempe, Arizona}{M.S. in Computer Science, GPA: 4.0}{May 2026}
+\vspace{0.2em}
+\resumeEntry{National Institute of Technology, Trichy}{Trichy, India}{Minor in Computer Science, GPA: 8.4/10}{May 2022}
+
+\vspace{0.3em}
+\resumeSection{Experience}
+\resumeEntry{Citibank}{Chennai, India}{Software Engineer 2}{Jul 2023 -- Aug 2024}
+\begin{itemize}
+% BEGIN AUTO_BULLETS:citibank-se2
+\item Reduced Suspicious Activity Report drafting time by 40--50\% by architecting a Neo4j-backed RAG system using LangChain + LLaMA3, with structure-aware chunking, domain-separated vector indexes, and evidence-grounded generation, securing model risk approval for production deployment.
+\item Eliminated manual SQL-based regulatory data updates, reclaiming 5+ engineering hours per week by building an internal tool using Angular, HTML, CSS, TypeScript for the front end and Spring Boot in Java for the backend with Oracle SQL stored procedures containerized with Docker.
+\item Enabled analytics on 10M+ records/day by engineering high-performance ETL pipelines in Spark (Scala) to transform data into Hive, improving regulatory reporting processes.
+\item Improved deployment reliability and reduced release time by approximately 30 minutes per cycle by building CI/CD pipelines (Jenkins, UDeploy) targeting AWS EC2 infrastructure.
+% END AUTO_BULLETS:citibank-se2
+\end{itemize}
+
+\resumeEntry{Citibank}{Chennai, India}{Software Engineer}{Jul 2022 -- Jul 2023}
+\begin{itemize}
+% BEGIN AUTO_BULLETS:citibank-se1
+\item Decreased search latency by 93\% (2s to 150ms) by implementing search features using Elasticsearch distributed indexing and Redis in-memory caching.
+\item Architected and developed Spring Boot microservices to decouple search, indexing, and caching components, improving maintainability, modularity, and ease of future enhancements for internal users.
+\item Improved search on 500k+ records/day by designing and implementing complex SQL stored procedures to process and batch-load large datasets into Elasticsearch, optimizing performance and ensuring reliable data indexing.
+\item Enabled data access for 500+ FX sales professionals by building and delivering multiple interactive dashboards using React and TypeScript, improving visibility into key sales and market metrics.
+% END AUTO_BULLETS:citibank-se1
+\end{itemize}
+
+\resumeEntry{Bank of New York Mellon}{Chennai, India}{Software Engineering Intern}{May 2021 -- Jul 2021}
+\begin{itemize}
+% BEGIN AUTO_BULLETS:bnym-intern
+\item Streamlined test execution workflows for 50+ QA analysts by building a full-stack internal testing dashboard using React, NodeJS, and MongoDB, improving release validation efficiency.
+\item Designed and integrated an event-driven messaging layer using RabbitMQ, enabling asynchronous test job processing, real-time status updates, and scalable workload distribution across services, reducing test execution bottlenecks and improving system throughput.
+\item Added unit tests in Spring Boot using JUnit and increased the code base test coverage from 32\% to 89\%.
+% END AUTO_BULLETS:bnym-intern
+\end{itemize}
+
+\resumeSection{Projects}
+\textbf{Sentient Analytics} \hfill \href{https://sentient-analytics.com}{sentient-analytics.com} \\
+\begin{itemize}
+% BEGIN AUTO_BULLETS:project-sentient-analytics
+\item Built a multi-agent AI workflow with LangGraph, LangChain, Pinecone, and LLMs to map internal data sources to regulatory fields and generate reports, reducing manual compliance reporting time by 90\%.
+\item Built and connected Trino-based data pipelines for edge data processing with a FastAPI backend and PostgreSQL, then developed frontend dashboards using React and Apache Superset to visualize metrics for 10 reports like SAR and BASEL III.
+% END AUTO_BULLETS:project-sentient-analytics
+\end{itemize}
+
+\textbf{Viral Grind} \hfill \href{https://viral-grind.xyz}{viral-grind.xyz} \textbar{} \href{https://github.com}{Github} \\
+\begin{itemize}
+% BEGIN AUTO_BULLETS:project-viral-grind
+\item Built a full-stack AI-powered video generation platform using React, FastAPI, and PostgreSQL that automatically creates short-form videos with dynamic subtitles, AI voiceovers (Coqui TTS), and layered background gameplay footage via MoviePy.
+\item Designed and containerized the application with Docker, Docker Compose, and Nginx, integrating FFmpeg and ImageMagick pipelines for automated video rendering and production-ready deployment.
+% END AUTO_BULLETS:project-viral-grind
+\end{itemize}
+
+\resumeSection{Skills}
+\begin{itemize}
+% BEGIN AUTO_SKILLS
+\item Programming: Java, TypeScript, Python, Scala, SQL
+\item Full Stack Development: React, Angular, Spring Boot, Node.js, Django, FastAPI, REST APIs, HTML, CSS
+\item Database and ETL: Apache Spark (Scala), Neo4j, Hadoop, Hive, Oracle SQL, PostgreSQL, Impala
+\item DevOps: Docker, Kubernetes, AWS, Jenkins
+\item Machine Learning and AI: Retrieval Augmented Generation (RAG), LangChain, LangGraph, Vector Databases
+% END AUTO_SKILLS
+\end{itemize}
+
+\end{document}

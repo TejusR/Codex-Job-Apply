@@ -30,6 +30,7 @@ OPTIONAL_ENV_KEYS = (
     "APPLICANT_GITHUB_URL",
     "APPLICANT_PORTFOLIO_URL",
     "APPLICANT_COVER_LETTER_PATH",
+    "APPLICANT_RESUME_TEMPLATE_PATH",
     "APPLICANT_CURRENT_VISA_STATUS",
     "APPLICANT_TARGET_ROLE_KEYWORDS",
     "APPLICANT_ALLOWED_LOCATIONS",
@@ -207,6 +208,9 @@ class ProfileValidationResult:
         cover_letter_path = resolve_profile_path(
             self.env_path.parent, self.env_values.get("APPLICANT_COVER_LETTER_PATH")
         )
+        resume_template_path = resolve_profile_path(
+            self.env_path.parent, self.env_values.get("APPLICANT_RESUME_TEMPLATE_PATH")
+        )
         target_role_keywords = parse_csv(self.env_values.get("APPLICANT_TARGET_ROLE_KEYWORDS"))
         enabled_search_sites = parse_search_sites(
             self.env_values.get("APPLICANT_ENABLED_SEARCH_SITES")
@@ -242,6 +246,9 @@ class ProfileValidationResult:
                 ),
                 "resume_path": str(resume_path) if resume_path else None,
                 "cover_letter_path": str(cover_letter_path) if cover_letter_path else None,
+                "resume_template_path": (
+                    str(resume_template_path) if resume_template_path else None
+                ),
                 "us_work_authorized": parse_bool(
                     self.env_values.get("APPLICANT_US_WORK_AUTHORIZED")
                 ),
@@ -291,6 +298,11 @@ def validate_profile(root: Path) -> ProfileValidationResult:
         )
         if cover_letter_path is not None and not cover_letter_path.exists():
             warnings.append("APPLICANT_COVER_LETTER_PATH points to a missing file.")
+        resume_template_path = resolve_profile_path(
+            root, env_values.get("APPLICANT_RESUME_TEMPLATE_PATH")
+        )
+        if resume_template_path is not None and not resume_template_path.exists():
+            warnings.append("APPLICANT_RESUME_TEMPLATE_PATH points to a missing file.")
         invalid_sites = invalid_search_sites(
             env_values.get("APPLICANT_ENABLED_SEARCH_SITES")
         )

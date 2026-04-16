@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("JobsPage", () => {
-  it("opens a detail drawer with the reserved resume panel", async () => {
+  it("opens a detail drawer with the tailored resume preview panel", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith("/api/runs")) {
@@ -61,6 +61,28 @@ describe("JobsPage", () => {
           text: async (): Promise<string> => ""
         };
       }
+      if (url.startsWith("/api/resume-customizations/")) {
+        return {
+          ok: true,
+          json: async () => ({
+            id: 22,
+            job_key: "job-1",
+            run_id: 7,
+            status: "succeeded",
+            created_at: "2026-04-10T00:03:00Z",
+            source_template_path: "/resume/master_resume.tex",
+            rendered_tex_path: "/data/resume_customizations/job-1/v1/resume.tex",
+            rendered_pdf_path: "/data/resume_customizations/job-1/v1/resume.pdf",
+            preview_content: "# Tailored Resume Preview\n\n## Summary\n- Backend-heavy fit",
+            customization_payload_json: "{}",
+            compiler: "pdflatex",
+            error_message: null,
+            preview_url: "/api/resume-customizations/22",
+            download_url: "/api/resume-customizations/22/file"
+          }),
+          text: async (): Promise<string> => ""
+        };
+      }
       return {
         ok: true,
         json: async () => ({
@@ -78,9 +100,13 @@ describe("JobsPage", () => {
           posted_at: "2 hours ago",
           raw_url: null,
           resume_info: {
+            customization_id: 22,
+            download_url: "/api/resume-customizations/22/file",
+            generated_at: "2026-04-10T00:03:00Z",
             label: "tailored-acme.pdf",
             path: "resume/tailored-acme.pdf",
-            source: "application_snapshot"
+            preview_url: "/api/resume-customizations/22",
+            source: "job_tailored"
           },
           source: "greenhouse",
           status: "applied",
@@ -97,9 +123,11 @@ describe("JobsPage", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByText("Software Engineer"));
 
-    expect(await screen.findByText("Resume Customization Panel")).toBeInTheDocument();
+    expect(await screen.findByText("Tailored Resume Snapshot")).toBeInTheDocument();
+    expect(await screen.findByText(/Backend-heavy fit/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Open PDF" })).toBeInTheDocument();
     expect(screen.getAllByText("tailored-acme.pdf")).toHaveLength(2);
-    expect(screen.getAllByText("Application Snapshot").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Job Tailored").length).toBeGreaterThan(0);
   });
 
   it("renders source as a dropdown backed by available source values", async () => {
@@ -117,8 +145,12 @@ describe("JobsPage", () => {
       posted_at: "2 hours ago",
       raw_url: null,
       resume_info: {
+        customization_id: null,
+        download_url: null,
+        generated_at: null,
         label: "tailored-acme.pdf",
         path: "resume/tailored-acme.pdf",
+        preview_url: null,
         source: "application_snapshot"
       },
       source: "greenhouse",
