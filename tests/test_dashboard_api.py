@@ -116,6 +116,59 @@ class DashboardApiTests(unittest.TestCase):
             self.assertEqual(row["resume_path_used"], "resume/custom-resume.pdf")
             self.assertEqual(row["resume_label_used"], "custom-resume.pdf")
 
+    def test_runs_endpoint_migrates_legacy_applications_table_before_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "jobs.sqlite3"
+
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE applications (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      job_key TEXT NOT NULL,
+                      applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+                      status TEXT NOT NULL,
+                      confirmation_text TEXT,
+                      confirmation_url TEXT,
+                      error_message TEXT
+                    );
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            client = self._client(root, db_path)
+            response = client.get("/api/runs")
+
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["items"], [])
+
+            connection = sqlite3.connect(db_path)
+            connection.row_factory = sqlite3.Row
+            try:
+                column_rows = connection.execute(
+                    "PRAGMA table_info(applications)"
+                ).fetchall()
+                index_row = connection.execute(
+                    """
+                    SELECT name
+                    FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_applications_resume_customization_id'
+                    """
+                ).fetchone()
+            finally:
+                connection.close()
+
+            column_names = {str(row["name"]) for row in column_rows}
+            self.assertIn("run_id", column_names)
+            self.assertIn("resume_customization_id", column_names)
+            self.assertIn("resume_path_used", column_names)
+            self.assertIn("resume_label_used", column_names)
+            self.assertIsNotNone(index_row)
+
     def test_start_run_endpoint_rejects_second_active_run(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

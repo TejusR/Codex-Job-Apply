@@ -210,6 +210,9 @@ SCHEMA_STATEMENTS = (
       FOREIGN KEY (run_id) REFERENCES runs(id)
     );
     """,
+)
+
+INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);",
     "CREATE INDEX IF NOT EXISTS idx_jobs_posted_at ON jobs(posted_at);",
     "CREATE INDEX IF NOT EXISTS idx_applications_job_key ON applications(job_key);",
@@ -282,6 +285,8 @@ def initialize_database(connection: sqlite3.Connection) -> None:
         _ensure_column(connection, "applications", "resume_label_used", "TEXT")
         _ensure_column(connection, "jobs", "description_text", "TEXT")
         _ensure_column(connection, "run_search_queries", "cursor_json", "TEXT")
+        for statement in INDEX_STATEMENTS:
+            connection.execute(statement)
 
 
 def start_run(db_path: Path) -> dict[str, object]:
