@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import threading
 import time
+import tomllib
 
 from .db import (
     claim_search_result,
@@ -87,6 +88,8 @@ DEFAULT_QUERY_TIMEOUT_SECONDS = None
 DEFAULT_JOB_TIMEOUT_SECONDS = None
 DEFAULT_MAX_WORKER_RETRIES = 1
 DEFAULT_APPLY_WORKERS = 5
+DEFAULT_PLAYWRIGHT_MCP_ARGS = ["@playwright/mcp@latest"]
+DEFAULT_WORKER_REASONING_EFFORT = "low"
 
 _QUERY_RESULTS_PAGE_OUTCOME = "results_page"
 _UNSUCCESSFUL_APPLICATION_STATUSES = {"failed", "blocked", "incomplete"}
@@ -1500,6 +1503,7 @@ def _build_codex_command(
     schema_path: Path,
     thread_id: str | None,
 ) -> list[str]:
+    config_overrides = _playwright_only_codex_overrides()
     command = [
         config.codex_bin,
         "exec",
@@ -1512,6 +1516,8 @@ def _build_codex_command(
         "-o",
         str(result_path),
     ]
+    for override in config_overrides:
+        command.extend(["-c", override])
     if config.codex_profile:
         command.extend(["-p", config.codex_profile])
     if thread_id:
@@ -1519,6 +1525,86 @@ def _build_codex_command(
     else:
         command.extend(["--output-schema", str(schema_path)])
     return command
+
+
+def _playwright_only_codex_overrides() -> list[str]:
+    playwright_config = _load_codex_playwright_server_config()
+    return [
+        f'model_reasoning_effort="{DEFAULT_WORKER_REASONING_EFFORT}"',
+        "plugins={}",
+        f"mcp_servers={_toml_literal({'playwright': playwright_config})}",
+    ]
+
+
+def _load_codex_playwright_server_config() -> dict[str, object]:
+    config_path = Path.home() / ".codex" / "config.toml"
+    try:
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+        return {
+            "command": "npx",
+            "args": list(DEFAULT_PLAYWRIGHT_MCP_ARGS),
+        }
+
+    mcp_servers = config.get("mcp_servers")
+    if not isinstance(mcp_servers, dict):
+        return {
+            "command": "npx",
+            "args": list(DEFAULT_PLAYWRIGHT_MCP_ARGS),
+        }
+    playwright = mcp_servers.get("playwright")
+    if not isinstance(playwright, dict):
+        return {
+            "command": "npx",
+            "args": list(DEFAULT_PLAYWRIGHT_MCP_ARGS),
+        }
+
+    normalized: dict[str, object] = {}
+    command = playwright.get("command")
+    if isinstance(command, str) and command.strip():
+        normalized["command"] = command.strip()
+    else:
+        normalized["command"] = "npx"
+
+    args = playwright.get("args")
+    if isinstance(args, list) and all(isinstance(item, str) for item in args):
+        normalized["args"] = list(args)
+    else:
+        normalized["args"] = list(DEFAULT_PLAYWRIGHT_MCP_ARGS)
+
+    env = playwright.get("env")
+    if isinstance(env, dict):
+        normalized_env = {
+            str(key): value
+            for key, value in env.items()
+            if isinstance(key, str)
+            and isinstance(value, (str, bool, int, float))
+        }
+        if normalized_env:
+            normalized["env"] = normalized_env
+
+    return normalized
+
+
+def _toml_literal(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ",".join(_toml_literal(item) for item in value) + "]"
+    if isinstance(value, dict):
+        items = []
+        for key, item_value in value.items():
+            if not isinstance(key, str):
+                continue
+            items.append(f"{key}={_toml_literal(item_value)}")
+        return "{" + ",".join(items) + "}"
+    raise TypeError(f"Unsupported TOML literal value: {value!r}")
 
 
 def _normalize_timeout_seconds(timeout_seconds: int | None) -> int | None:

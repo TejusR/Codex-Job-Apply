@@ -28,6 +28,8 @@ Automate this loop:
 - Playwright MCP for search, extraction, application flow, and manual CAPTCHA recovery in the same browser session
 - SQLite for persistence and deduplication
 
+Spawned `codex exec` workers are forced into a Playwright-only MCP configuration at launch so they do not inherit unrelated browser plugins or MCP servers from the user's global Codex config.
+
 ## Files
 
 - `WORKFLOW.md`: end-to-end workflow

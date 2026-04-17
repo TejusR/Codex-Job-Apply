@@ -24,6 +24,7 @@ from job_apply_bot.db import (
     workflow_status,
 )
 from job_apply_bot.supervisor import (
+    _build_codex_command,
     _validate_query_worker_payload,
     apply_job_with_codex,
     discover_next_candidate_with_codex,
@@ -32,6 +33,44 @@ from job_apply_bot.supervisor import (
 
 
 class SupervisorWorkflowTests(unittest.TestCase):
+    def test_build_codex_command_forces_playwright_only_mcp_overrides(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        result_path = root / "result.json"
+        schema_path = root / "schema.json"
+
+        with patch(
+            "job_apply_bot.supervisor._load_codex_playwright_server_config",
+            return_value={
+                "command": "npx",
+                "args": ["@playwright/mcp@latest", "--isolated"],
+            },
+        ):
+            command = _build_codex_command(
+                config=type(
+                    "Config",
+                    (),
+                    {
+                        "codex_bin": "codex",
+                        "repo_root": root,
+                        "codex_profile": "job-apply",
+                    },
+                )(),
+                result_path=result_path,
+                schema_path=schema_path,
+                thread_id=None,
+            )
+
+        self.assertIn("-c", command)
+        self.assertIn('model_reasoning_effort="low"', command)
+        self.assertIn("plugins={}", command)
+        self.assertIn(
+            'mcp_servers={playwright={command="npx",args=["@playwright/mcp@latest","--isolated"]}}',
+            command,
+        )
+        self.assertNotIn("camoufox", " ".join(command).lower())
+        self.assertIn("-p", command)
+        self.assertIn("job-apply", command)
+
     def _write_valid_profile(
         self,
         root: Path,

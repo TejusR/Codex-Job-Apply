@@ -1,0 +1,24 @@
+- generic [active] [ref=e1]:
+  - generic:
+    - generic:
+      - link "Skip to main content" [ref=e2] [cursor=pointer]
+      - link "Accessibility help" [ref=e3] [cursor=pointer]:
+        - /url: https://support.google.com/websearch/answer/181196?hl=en
+      - link "Accessibility feedback" [ref=e4] [cursor=pointer]
+  - generic [ref=e9]:
+    - search [ref=e10]:
+      - generic [ref=e12]
+    - generic [ref=e41]:
+      - button "Settings" [ref=e43] [cursor=pointer]
+      - generic [ref=e49]
+  - generic [ref=e58]:
+    - navigation [ref=e64]:
+      - generic [ref=e70]
+    - heading "Search Results" [level=1] [ref=e119]
+    - main [ref=e125]:
+      - generic [ref=e129]
+      - navigation [ref=e453]
+      - navigation
+    - contentinfo [ref=e469]:
+      - heading "Footer Links" [level=1] [ref=e470]
+      - generic [ref=e474]

@@ -1,0 +1,41 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - separator [ref=e3]
+    - iframe [ref=e8]:
+      
+    - separator [ref=e9]
+    - generic [ref=e10]
+  - iframe [active] [ref=e16]:
+    - dialog [ref=f5e3]:
+      - generic [ref=f5e4]:
+        - generic [ref=f5e7]:
+          - text: Select all squares with
+          - strong [ref=f5e8]: traffic lights
+        - table [ref=f5e11]:
+          - rowgroup [ref=f5e12]:
+            - row [ref=f5e13]:
+              - button [ref=f5e14]
+              - button [ref=f5e17]
+              - button [ref=f5e20]
+              - button [ref=f5e23]
+            - row [ref=f5e26]:
+              - button [ref=f5e27]
+              - button [ref=f5e31]
+              - button [ref=f5e35]
+              - button [ref=f5e38]
+            - row [ref=f5e41]:
+              - button [ref=f5e42]
+              - button [active] [ref=f5e45]
+              - button [ref=f5e49]
+              - button [ref=f5e52]
+            - row [ref=f5e55]:
+              - button [ref=f5e56]
+              - button [ref=f5e59]
+              - button [ref=f5e62]
+              - button [ref=f5e65]
+      - generic [ref=f5e71]:
+        - generic [ref=f5e72]:
+          - button "Get a new challenge" [ref=f5e74] [cursor=pointer]
+          - button "Get an audio challenge" [ref=f5e76] [cursor=pointer]
+          - button "Help" [ref=f5e78] [cursor=pointer]
+        - button "Verify" [ref=f5e80] [cursor=pointer]

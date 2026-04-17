@@ -32,7 +32,7 @@ Use `PROMPTS/CODEX_MASTER_PROMPT.md` only as a legacy/manual fallback when you e
 10. checkpoints query progress after each processed discovery result and completes or fails each query deterministically
 11. finishes only when `workflow-status` reports `drained=true`
 
-The spawned Codex workers run in Codex's non-interactive bypass mode so Playwright MCP tools remain callable from those child sessions.
+The spawned Codex workers run in Codex's non-interactive bypass mode and inject a Playwright-only MCP override, so those child sessions do not inherit unrelated browser plugins such as Camoufox from the global Codex config.
 If a search or application CAPTCHA appears, a worker keeps the same Playwright session open, polls browser state every 10 seconds for up to 10 minutes, and then either continues the same step or returns the appropriate terminal outcome.
 
 ## Failure Recovery
