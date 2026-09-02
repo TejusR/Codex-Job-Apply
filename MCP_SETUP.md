@@ -41,6 +41,6 @@ Keep these local files or secrets available in the repository root:
 - use explicit waits for dynamic pages
 - handle multi-step forms
 - capture screenshots on failure when possible
-- validate `.env` with `python -m job_apply_bot validate-profile` before attempting submissions
+- validate `.env` with `job-apply-bot validate-profile` before attempting submissions
 - treat a visible CAPTCHA, reCAPTCHA iframe, or challenge page in Playwright as the trigger to keep polling the same browser session instead of switching tools
 - use ASCII-only status text during long manual-wait loops to avoid Windows console encoding issues

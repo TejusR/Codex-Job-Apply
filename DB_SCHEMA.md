@@ -1,149 +1,57 @@
 # SQLite Database Schema
 
-## Table: jobs
+The Go backend preserves the existing SQLite database at
+`data/job_apply_bot.sqlite3`. Schema initialization is idempotent and never
+recreates or drops user tables. Legacy columns are added before indexes that
+reference them.
 
-```sql
-CREATE TABLE IF NOT EXISTS jobs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_key TEXT NOT NULL UNIQUE,
-  canonical_url TEXT NOT NULL,
-  raw_url TEXT,
-  source TEXT,
-  title TEXT,
-  company TEXT,
-  location TEXT,
-  posted_at TEXT,
-  discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
-  status TEXT NOT NULL DEFAULT 'discovered',
-  status_reason TEXT,
-  last_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
+## Tables
 
-## Table: applications
+- `jobs`: normalized jobs, source metadata, description text, current workflow status, and status reason
+- `applications`: every application attempt, run association, confirmation data, and resume snapshot/customization
+- `runs`: workflow counters, lifecycle timestamps, and JSON notes (`seen_job_keys`, `requeued_jobs_count`)
+- `application_findings`: structured blocked, incomplete, and failed-application findings
+- `run_search_queries`: per-run board query state, progress counters, cursor JSON, and terminal error
+- `run_search_results`: Google/listing results, parent-child expansion, claims, and terminal resolution status
+- `run_query_skipped_results`: deduplicated query results skipped before ingestion
+- `codex_worker_sessions`: reusable Codex thread IDs and live worker status by logical slot
+- `codex_worker_attempts`: invocation attempts, exit state, result path, and log path
+- `resume_customizations`: tailored resume source, payload, rendered files, compiler, and failure state
 
-```sql
-CREATE TABLE IF NOT EXISTS applications (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_key TEXT NOT NULL,
-  applied_at TEXT NOT NULL DEFAULT (datetime('now')),
-  status TEXT NOT NULL,
-  confirmation_text TEXT,
-  confirmation_url TEXT,
-  error_message TEXT,
-  FOREIGN KEY (job_key) REFERENCES jobs(job_key)
-);
-```
+The complete executable DDL and index definitions live in
+`internal/store/store.go` so runtime migration behavior and documentation cannot
+silently diverge.
 
-## Table: runs
+## Status Contracts
 
-```sql
-CREATE TABLE IF NOT EXISTS runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  started_at TEXT NOT NULL DEFAULT (datetime('now')),
-  finished_at TEXT,
-  jobs_found INTEGER NOT NULL DEFAULT 0,
-  jobs_filtered_in INTEGER NOT NULL DEFAULT 0,
-  jobs_skipped_old INTEGER NOT NULL DEFAULT 0,
-  jobs_skipped_duplicate INTEGER NOT NULL DEFAULT 0,
-  jobs_applied INTEGER NOT NULL DEFAULT 0,
-  jobs_failed INTEGER NOT NULL DEFAULT 0,
-  notes TEXT
-);
-```
+Jobs use `discovered`, `filtered_out_old`, `duplicate_skipped`,
+`ready_to_apply`, `applying`, `applied`, `incomplete`, `blocked`, `failed`, and
+`skipped_unverifiable_date`.
 
-## Table: application_findings
+Applications use `submitted`, `failed`, `incomplete`, `blocked`, and
+`duplicate_skipped`. Only `failed` applications may become eligible again when
+rediscovered in a later run.
 
-```sql
-CREATE TABLE IF NOT EXISTS application_findings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_key TEXT NOT NULL,
-  run_id INTEGER NOT NULL,
-  application_status TEXT NOT NULL,
-  stage TEXT NOT NULL,
-  category TEXT NOT NULL,
-  summary TEXT NOT NULL,
-  detail TEXT,
-  page_url TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  FOREIGN KEY (job_key) REFERENCES jobs(job_key),
-  FOREIGN KEY (run_id) REFERENCES runs(id)
-);
-```
+Queries use `pending`, `in_progress`, `completed`, and `failed`. Search results
+add `processing` plus terminal resolution/application states such as `expanded`,
+`filtered_out`, `ingested`, `applied`, and `duplicate_skipped`.
 
-## Table: run_search_queries
+## Compatibility Migrations
 
-```sql
-CREATE TABLE IF NOT EXISTS run_search_queries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id INTEGER NOT NULL,
-  source_key TEXT NOT NULL,
-  domain TEXT NOT NULL,
-  query_text TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'pending',
-  started_at TEXT,
-  finished_at TEXT,
-  results_seen INTEGER NOT NULL DEFAULT 0,
-  jobs_ingested INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT,
-  FOREIGN KEY (run_id) REFERENCES runs(id),
-  UNIQUE(run_id, source_key)
-);
-```
+On every open, the store:
 
-## Indexes
+1. Creates missing tables.
+2. Adds legacy `applications.run_id`, `applications.resume_customization_id`,
+   `applications.resume_path_used`, `applications.resume_label_used`,
+   `jobs.description_text`, and `run_search_queries.cursor_json` columns.
+3. Creates all indexes only after those columns exist.
 
-```sql
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_posted_at ON jobs(posted_at);
-CREATE INDEX IF NOT EXISTS idx_applications_job_key ON applications(job_key);
-CREATE INDEX IF NOT EXISTS idx_application_findings_run_id ON application_findings(run_id);
-CREATE INDEX IF NOT EXISTS idx_application_findings_job_key ON application_findings(job_key);
-CREATE INDEX IF NOT EXISTS idx_run_search_queries_run_status ON run_search_queries(run_id, status);
-```
+This ordering allows databases created by older Python releases to open without
+data loss. The backend uses a SQLite busy timeout and short transactions for
+cross-process dashboard/workflow concurrency.
 
-## Recommended Status Values
+## Completion Rules
 
-Jobs:
-- discovered
-- filtered_out_old
-- duplicate_skipped
-- ready_to_apply
-- applying
-- applied
-- incomplete
-- blocked
-- failed
-- skipped_unverifiable_date
-
-Notes:
-- when `ingest-job` is run with `--allow-unverifiable-freshness`, a job with ambiguous freshness stays `ready_to_apply` and should carry a `status_reason` such as `unverified_freshness_allowed`
-- `failed` is retryable only when the same job is rediscovered in a later run
-- `applied`, `duplicate_skipped`, `incomplete`, `blocked`, and `applying` are terminal for duplicate checks
-- `prepare-run` requeues stale `applying` jobs to `ready_to_apply` with `status_reason=requeued_from_interrupted_run`
-
-Applications:
-- submitted
-- failed
-- incomplete
-- blocked
-- duplicate_skipped
-
-Findings:
-- use `application_findings` for structured blocker / failure capture instead of relying only on `applications.error_message`
-- `finish-run` should summarize findings by category and include the latest findings for blocked, incomplete, and failed jobs
-
-Run Search Queries:
-- pending
-- in_progress
-- completed
-- failed
-
-Run Notes:
-- `seen_job_keys` tracks same-run dedupe during discovery
-- `requeued_jobs_count` tracks how many stale `applying` jobs were moved back to `ready_to_apply` during `prepare-run`
-
-Run Completion:
-- `workflow-status` is drained only when `ready_to_apply=0`, `applying=0`, `queries_pending=0`, and `queries_in_progress=0`
-- `finish-run --run-id <id>` refuses unresolved work unless `--force` is supplied
-- `finish-run` includes a `search_summary` with total/completed/failed/pending/in-progress query counts and `requeued_jobs_count`
+`workflow-status` reports `drained=true` only when no ready/applying jobs,
+pending/in-progress queries, or pending/processing search results remain.
+`finish-run` rejects unresolved work unless `--force` is supplied.

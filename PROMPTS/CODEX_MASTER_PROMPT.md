@@ -8,8 +8,8 @@ Before doing browser work:
 - Read all markdown files in this repository.
 - Load the root-level `.env` and `applicant.md`.
 - Use `resume/Tejus Resume_SDE_V2.pdf` as the resume source.
-- Run `python -m job_apply_bot validate-profile`.
-- Then run `python -m job_apply_bot prepare-run` and use the returned run-scoped queries for Google discovery.
+- Run `job-apply-bot validate-profile`.
+- Then run `job-apply-bot prepare-run` and use the returned run-scoped queries for Google discovery.
 - If any required applicant fields, files, or Playwright MCP tools are missing, list the exact missing items and continue only as far as possible without faking completion.
 - If `.env` includes `APPLICANT_ENABLED_SEARCH_SITES`, only use the enabled sources during search.
 
@@ -23,7 +23,7 @@ Requirements:
 - For each Google query, force the `Past 24 hours` filter and Google's date-sorted / most-recent view when available.
 - Search exhaustively: continue through reachable Google result pages and relevant listing pages until no new candidates remain for each enabled source.
 - If Google shows a CAPTCHA or anti-bot interstitial, keep the same Playwright page open, wait up to 10 minutes for manual solve, and poll the browser state every 10 seconds. Continue only when the normal SERP is back; otherwise fail that query.
-- Keep checking `python -m job_apply_bot workflow-status --run-id <id>` and do not stop until all seeded queries are terminal and there are no `ready_to_apply` or `applying` jobs left.
+- Keep checking `job-apply-bot workflow-status --run-id <id>` and do not stop until all seeded queries are terminal and there are no `ready_to_apply` or `applying` jobs left.
 - Process each discovered candidate immediately in the order it appears for the current query instead of batching all sources first.
 - If a result is a listing page rather than a direct job page, extract its child job links and process those child jobs one by one before returning to the search results.
 - Filter to jobs posted within the last 24 hours when freshness can be verified.
@@ -51,21 +51,21 @@ Implementation constraints:
 - Print a final summary with totals.
 
 Execution contract:
-- Create and seed the run with `python -m job_apply_bot prepare-run`.
-- Use `python -m job_apply_bot workflow-status --run-id <id>` as the completion gate for the whole run.
-- Drain leftover `ready_to_apply` backlog with `python -m job_apply_bot next-job --mark-applying` before claiming a new query.
-- Claim one pending query at a time with `python -m job_apply_bot next-query --run-id <id>`.
-- For each discovered candidate, call `python -m job_apply_bot ingest-job` with the extracted metadata so filtering and dedupe happen in SQLite-backed state.
-- Pass `--allow-unverifiable-freshness` to `python -m job_apply_bot ingest-job`.
+- Create and seed the run with `job-apply-bot prepare-run`.
+- Use `job-apply-bot workflow-status --run-id <id>` as the completion gate for the whole run.
+- Drain leftover `ready_to_apply` backlog with `job-apply-bot next-job --mark-applying` before claiming a new query.
+- Claim one pending query at a time with `job-apply-bot next-query --run-id <id>`.
+- For each discovered candidate, call `job-apply-bot ingest-job` with the extracted metadata so filtering and dedupe happen in SQLite-backed state.
+- Pass `--allow-unverifiable-freshness` to `job-apply-bot ingest-job`.
 - If `ingest-job` returns `ready_to_apply`, apply immediately before moving to the next search result.
-- When a claimed query is exhausted, call `python -m job_apply_bot complete-query`.
-- If a query-level failure prevents finishing that query, call `python -m job_apply_bot fail-query` with the error message and continue the remaining queries.
+- When a claimed query is exhausted, call `job-apply-bot complete-query`.
+- If a query-level failure prevents finishing that query, call `job-apply-bot fail-query` with the error message and continue the remaining queries.
 - Use Playwright MCP for search, extraction, and application flow steps.
 - If Google or a specific job hits a CAPTCHA, keep that same Playwright session open, poll the browser state every 10 seconds for up to 10 minutes, and continue only after the challenge clears.
-- After each application attempt, call `python -m job_apply_bot record-application`.
-- When the application outcome is `failed`, `incomplete`, or `blocked`, also call `python -m job_apply_bot record-finding`.
+- After each application attempt, call `job-apply-bot record-application`.
+- When the application outcome is `failed`, `incomplete`, or `blocked`, also call `job-apply-bot record-finding`.
 - If the 10-minute Playwright wait expires and the job is still blocked by CAPTCHA, record the job as `blocked` and include a `record-finding` entry with category `captcha`.
-- Finish with `python -m job_apply_bot finish-run` only after `workflow-status` reports `drained=true`, unless intentionally using `--force`, and print the returned summary.
+- Finish with `job-apply-bot finish-run` only after `workflow-status` reports `drained=true`, unless intentionally using `--force`, and print the returned summary.
 
 Execution behavior:
 - First inspect the repository and summarize the implementation plan.

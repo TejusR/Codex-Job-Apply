@@ -5,7 +5,7 @@
 Run the supervised workflow from the repository root:
 
 ```bash
-python -m job_apply_bot run-workflow
+job-apply-bot run-workflow
 ```
 
 That is now the normal primary entry point.
@@ -14,7 +14,7 @@ That is now the normal primary entry point.
 
 The runner now launches bounded `codex exec` workers internally.
 
-Use `PROMPTS/CODEX_MASTER_PROMPT.md` only as a legacy/manual fallback when you explicitly want one long Codex-driven run instead of the supervised Python loop.
+Use `PROMPTS/CODEX_MASTER_PROMPT.md` only as a legacy/manual fallback when you explicitly want one long Codex-driven run instead of the supervised Go loop.
 
 ## Supervised Execution Style
 
@@ -48,8 +48,8 @@ Those bundles may include screenshots, HTML, browser logs, runtime context, and 
 If a job failed because of an internal worker problem after discovery, recover it in the same run with:
 
 ```bash
-python -m job_apply_bot requeue-runner-failures --run-id <id>
-python -m job_apply_bot run-workflow --run-id <id>
+job-apply-bot requeue-runner-failures --run-id <id>
+job-apply-bot run-workflow --run-id <id>
 ```
 
 If the same run was interrupted mid-query, `run-workflow --run-id <id>` resumes that `in_progress` query from its persisted `results_seen` and `jobs_ingested` counters.

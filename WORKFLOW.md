@@ -4,9 +4,9 @@
 
 Before new discovery:
 
-- run `python -m job_apply_bot prepare-run`
+- run `job-apply-bot prepare-run`
 - this validates the profile, creates a run row in SQLite, seeds one `run_search_queries` row per enabled Google query, and requeues any stale `jobs.status='applying'` rows back to `ready_to_apply`
-- call `python -m job_apply_bot workflow-status --run-id <id>` immediately after `prepare-run`
+- call `job-apply-bot workflow-status --run-id <id>` immediately after `prepare-run`
 - if backlog exists, use `next-job --mark-applying` to resume those jobs before claiming a new search query
 
 Backlog draining is the only place the workflow should rely on the local SQLite sort order.

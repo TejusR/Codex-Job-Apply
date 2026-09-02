@@ -14,6 +14,7 @@ data/
 artifacts/
 .codex/
 tmp/
+.tmp/
 backend-dashboard*.log
 frontend-dev*.log
 frontend/frontend-dev*.log
@@ -26,4 +27,6 @@ __pycache__/
 # Frontend build output
 frontend/node_modules/
 frontend/dist/
+internal/dashboard/web/dist/
+bin/
 .pytest_cache/

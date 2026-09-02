@@ -42,7 +42,8 @@ Spawned `codex exec` workers are forced into a Playwright-only MCP configuration
 - `PROMPTS/CODEX_QUERY_WORKER_SCHEMA.json` / `PROMPTS/CODEX_APPLY_WORKER_SCHEMA.json`: machine-readable output contracts for those workers
 - `.env` / `.env.example`: root-level applicant fields used for forms and validation
 - `applicant.md` / `applicant.md.example`: root-level truthful free-form context for questions that do not fit neatly in env vars
-- `job_apply_bot/`: local CLI helpers for SQLite state, filtering, dedupe, and profile validation
+- `cmd/job-apply-bot/`: single Go CLI and dashboard executable
+- `internal/`: Go workflow, SQLite, Codex worker, resume, and dashboard packages
 
 ## Principles
 
@@ -79,10 +80,11 @@ Committed templates are provided as `.env.example` and `applicant.md.example`.
 
 Use this path when you want to run the actual discovery + apply workflow from the command line.
 
-1. Install the Python dependencies:
+1. Install Go 1.24 or newer, download the modules, and install the CLI:
 
 ```bash
-python -m pip install -r requirements.txt
+go mod download
+go install ./cmd/job-apply-bot
 ```
 
 2. Create your local applicant files if you have not already:
@@ -100,25 +102,25 @@ cp applicant.md.example applicant.md
 5. Validate the profile before starting a run:
 
 ```bash
-python -m job_apply_bot validate-profile
+job-apply-bot validate-profile
 ```
 
 6. Start the workflow:
 
 ```bash
-python -m job_apply_bot run-workflow
+job-apply-bot run-workflow
 ```
 
 7. Watch progress for the active run in the SQLite database:
 
 ```bash
-python -m job_apply_bot workflow-status --run-id <run_id>
+job-apply-bot workflow-status --run-id <run_id>
 ```
 
 8. If a run stops before it finishes, resume the same run instead of starting over:
 
 ```bash
-python -m job_apply_bot run-workflow --run-id <run_id>
+job-apply-bot run-workflow --run-id <run_id>
 ```
 
 Notes:
@@ -129,24 +131,25 @@ Notes:
 - If you need to recover jobs that failed because of an internal Codex worker error, run:
 
 ```bash
-python -m job_apply_bot requeue-runner-failures --run-id <run_id>
+job-apply-bot requeue-runner-failures --run-id <run_id>
 ```
 
 ## Step-by-Step: Run the Dashboard
 
 The dashboard has two parts:
 
-- a FastAPI server started from Python on port `8000`
+- a Go HTTP server on port `8000`
 - a Vite frontend started from `frontend/` on port `5173` during development
 
 ### Development Mode
 
 Use this while actively working on the dashboard UI.
 
-1. Install the Python dependencies:
+1. Install the Go dependencies and CLI:
 
 ```bash
-python -m pip install -r requirements.txt
+go mod download
+go install ./cmd/job-apply-bot
 ```
 
 2. Install the frontend dependencies:
@@ -159,7 +162,7 @@ npm install
 3. In one terminal, start the dashboard API server from the repo root:
 
 ```bash
-python -m job_apply_bot serve-dashboard --reload
+job-apply-bot serve-dashboard --reload
 ```
 
 4. In a second terminal, start the Vite frontend:
@@ -179,7 +182,7 @@ In development, Vite proxies `/api` requests to `http://127.0.0.1:8000`.
 
 ### Built Dashboard Mode
 
-Use this when you want the Python server to serve the built frontend itself.
+Use this when you want the Go server to serve frontend assets embedded in the executable.
 
 1. Build the frontend:
 
@@ -187,12 +190,14 @@ Use this when you want the Python server to serve the built frontend itself.
 cd frontend
 npm install
 npm run build
+cd ..
+go install ./cmd/job-apply-bot
 ```
 
 2. Start the dashboard server from the repo root:
 
 ```bash
-python -m job_apply_bot serve-dashboard
+job-apply-bot serve-dashboard
 ```
 
 3. Open the dashboard in your browser:
@@ -248,26 +253,26 @@ If the key is omitted or invalid, the workflow defaults to `5`.
 
 ## Support CLI
 
-The repo now includes a Python CLI for the deterministic workflow steps plus a supervised Codex runner:
+The repo now includes a Go CLI for the deterministic workflow steps plus a supervised Codex runner:
 
 ```bash
-python -m job_apply_bot validate-profile
-python -m job_apply_bot prepare-run
-python -m job_apply_bot claim-query --run-id 1
-python -m job_apply_bot discover-next-candidate-with-codex --run-id 1 --source-key greenhouse
-python -m job_apply_bot apply-job-with-codex --run-id 1 --job-key "<job_key>"
-python -m job_apply_bot run-workflow
-python -m job_apply_bot requeue-runner-failures --run-id 1
-python -m job_apply_bot workflow-status --run-id 1
-python -m job_apply_bot next-query --run-id 1
-python -m job_apply_bot complete-query --run-id 1 --source-key greenhouse --results-seen 20 --jobs-ingested 4
-python -m job_apply_bot fail-query --run-id 1 --source-key ashby --message "Google rate limited the query"
-python -m job_apply_bot ingest-job --run-id 1 --raw-url "https://boards.greenhouse.io/acme/jobs/12345" --title "Software Engineer" --location "Remote, United States" --posted-at "New" --allow-unverifiable-freshness
-python -m job_apply_bot next-job --mark-applying
-python -m job_apply_bot record-application --job-key "<job_key>" --status submitted --run-id 1
-python -m job_apply_bot record-finding --job-key "<job_key>" --run-id 1 --application-status failed --stage submit --category confirmation_missing --summary "No confirmation page appeared"
-python -m job_apply_bot finish-run --run-id 1
-python -m unittest discover -s tests
+job-apply-bot validate-profile
+job-apply-bot prepare-run
+job-apply-bot claim-query --run-id 1
+job-apply-bot discover-next-candidate-with-codex --run-id 1 --source-key greenhouse
+job-apply-bot apply-job-with-codex --run-id 1 --job-key "<job_key>"
+job-apply-bot run-workflow
+job-apply-bot requeue-runner-failures --run-id 1
+job-apply-bot workflow-status --run-id 1
+job-apply-bot next-query --run-id 1
+job-apply-bot complete-query --run-id 1 --source-key greenhouse --results-seen 20 --jobs-ingested 4
+job-apply-bot fail-query --run-id 1 --source-key ashby --message "Google rate limited the query"
+job-apply-bot ingest-job --run-id 1 --raw-url "https://boards.greenhouse.io/acme/jobs/12345" --title "Software Engineer" --location "Remote, United States" --posted-at "New" --allow-unverifiable-freshness
+job-apply-bot next-job --mark-applying
+job-apply-bot record-application --job-key "<job_key>" --status submitted --run-id 1
+job-apply-bot record-finding --job-key "<job_key>" --run-id 1 --application-status failed --stage submit --category confirmation_missing --summary "No confirmation page appeared"
+job-apply-bot finish-run --run-id 1
+go test ./...
 ```
 
 By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
@@ -276,7 +281,7 @@ By default the CLI stores SQLite state at `data/job_apply_bot.sqlite3`.
 `next-job` remains available for draining backlog in SQLite order; new discovery should otherwise ingest and apply each candidate immediately.
 `finish-run` now refuses unresolved work unless `--force` is supplied.
 `validate-profile` still emits `google_search_queries`, which are generated from the current `.env` role keywords and enabled search sites, along with the resolved discovery page cap in the emitted profile payload.
-`run-workflow` is the primary entrypoint. It owns the outer loop in Python and launches short-lived `codex exec` workers for one discovery step or one job application attempt at a time.
+`run-workflow` is the primary entrypoint. It owns the outer loop in Go and launches short-lived `codex exec` workers for one discovery step or one job application attempt at a time.
 Those workers run in Codex's non-interactive bypass mode so Playwright MCP tools remain usable from spawned sessions.
 If a search or application CAPTCHA appears, a worker keeps the same Playwright session open, polls browser state every 10 seconds for up to 10 minutes, and then either continues or returns the appropriate terminal outcome.
 Any unsuccessful apply attempt now leaves a raw local failure bundle under `data/codex_worker_artifacts/run-<id>/apply/`. These bundles may contain PII-filled form data, screenshots, HTML, and browser logs.
@@ -287,9 +292,9 @@ If an apply attempt fails because of an internal worker problem such as `codex_w
 Once `.env` and `applicant.md` are filled in, the normal entrypoint is:
 
 ```bash
-python -m job_apply_bot run-workflow
+job-apply-bot run-workflow
 ```
 
-This keeps the workflow lifecycle in Python while still using Codex for bounded browser work.
+This keeps the workflow lifecycle in Go while still using Codex for bounded browser work.
 
 `PROMPTS/CODEX_MASTER_PROMPT.md` remains available as a legacy/manual fallback when you explicitly want one long Codex-run conversation, but it is no longer the recommended primary entrypoint.

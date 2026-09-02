@@ -40,7 +40,7 @@ For each enabled source, run:
 
 `site:<domain> ("software engineer" OR "backend engineer" OR "full stack engineer" OR "software developer") ("united states" OR "remote")`
 
-In execution, prefer the `google_search_queries` returned by `python -m job_apply_bot validate-profile`, since those are generated from the current `.env`.
+In execution, prefer the `google_search_queries` returned by `job-apply-bot validate-profile`, since those are generated from the current `.env`.
 
 ## Search Execution Rules
 
