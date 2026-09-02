@@ -31,6 +31,10 @@ func TestCodexHelperProcess(t *testing.T) {
 	var payload any
 	switch {
 	case strings.Contains(prompt, "current_run_seen_urls") || strings.Contains(prompt, "query_text"):
+		if scenario == "query-failure" && strings.Contains(prompt, `"source_key": "ashby"`) {
+			payload = map[string]any{"outcome": "query_failed", "results": []any{}, "next_page": nil, "query_error": "simulated query failure"}
+			break
+		}
 		url := "https://boards.greenhouse.io/acme/jobs/123"
 		page := 1
 		var next any
@@ -206,5 +210,34 @@ func TestListingExpansionDeduplicatesChildren(t *testing.T) {
 	results, _ := database.QueryRows(context.Background(), `SELECT * FROM run_search_results ORDER BY id`)
 	if len(results) != 2 || results[0]["status"] != "expanded" || results[1]["status"] != "applied" {
 		t.Fatalf("results: %#v", results)
+	}
+}
+
+func TestQueryFailureIsIsolated(t *testing.T) {
+	t.Setenv("GO_WANT_CODEX_HELPER", "1")
+	t.Setenv("CODEX_HELPER_SCENARIO", "query-failure")
+	root := workflowRoot(t)
+	envPath := filepath.Join(root, ".env")
+	data, _ := os.ReadFile(envPath)
+	data = []byte(strings.Replace(string(data), "APPLICANT_ENABLED_SEARCH_SITES=greenhouse", "APPLICANT_ENABLED_SEARCH_SITES=greenhouse, ashby", 1))
+	if err := os.WriteFile(envPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := store.Open(filepath.Join(root, "jobs.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	service := New(Config{Store: database, RepoRoot: root, CodexBin: fakeCodex(t), MaxWorkerRetries: 1, ApplyWorkers: 2})
+	result, err := service.Run(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := result["search_summary"].(store.Row)
+	if summary["failed_queries"] != 1 || summary["completed_queries"] != 1 {
+		t.Fatalf("search summary: %#v", summary)
+	}
+	if result["jobs_applied"].(int64) != 1 {
+		t.Fatalf("result: %#v", result)
 	}
 }

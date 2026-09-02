@@ -511,30 +511,29 @@ func (s *Store) MarkJobApplying(ctx context.Context, key string) (Row, error) {
 }
 
 func (s *Store) RequeueStaleApplyingJobs(ctx context.Context, runID *int) (int, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status='ready_to_apply',status_reason='requeued_from_interrupted_run',last_updated_at=? WHERE status='applying'`, jobs.FormatTimestamp(jobs.UTCNow()))
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status='ready_to_apply',status_reason='requeued_from_interrupted_run',last_updated_at=? WHERE status='applying'`, jobs.FormatTimestamp(jobs.UTCNow()))
 	if err != nil {
 		return 0, err
 	}
 	count64, _ := result.RowsAffected()
 	count := int(count64)
 	if runID != nil {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return 0, err
-		}
 		notes, err := getNotes(ctx, tx, *runID)
 		if err == nil {
 			notes["requeued_jobs_count"] = asInt(notes["requeued_jobs_count"]) + count
 			err = setNotes(ctx, tx, *runID, notes)
 		}
-		if err == nil {
-			err = tx.Commit()
-		} else {
-			tx.Rollback()
-		}
 		if err != nil {
 			return 0, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 	return count, nil
 }
